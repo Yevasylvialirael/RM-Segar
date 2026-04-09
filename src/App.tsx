@@ -133,6 +133,7 @@ export default function App() {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const chatEndRef = React.useRef<HTMLDivElement>(null);
   const touchStartRef = React.useRef(0);
+  const mouseStartRef = React.useRef<number>(-1);
 
   useEffect(() => {
     const checkKey = async () => {
@@ -398,10 +399,57 @@ export default function App() {
     container.addEventListener('touchmove', handleTouchMove, { passive: false });
     container.addEventListener('touchend', handleTouchEnd);
 
+    // Mouse events for Laptop/Tablet (Non-touch/Cursor users)
+    const handleMouseDown = (e: MouseEvent) => {
+      if (window.scrollY <= 0) {
+        mouseStartRef.current = e.clientY;
+      } else {
+        mouseStartRef.current = -1;
+      }
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (mouseStartRef.current === -1 || window.scrollY > 0) return;
+      const currentY = e.clientY;
+      const diff = currentY - mouseStartRef.current;
+      if (diff > 0) {
+        setPullY(diff * 0.5);
+      } else {
+        setPullY(0);
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (mouseStartRef.current !== -1) {
+        if (pullY > 140) {
+          setIsRefreshing(true);
+          setTimeout(() => {
+            setIsRefreshing(false);
+            setShowSuccess(true);
+            setTimeout(() => {
+              setShowSuccess(false);
+              setPullY(0);
+            }, 1500);
+          }, 2000);
+        } else {
+          setPullY(0);
+        }
+        mouseStartRef.current = -1;
+      }
+    };
+
+    container.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
     return () => {
       container.removeEventListener('touchstart', handleTouchStart);
       container.removeEventListener('touchmove', handleTouchMove);
       container.removeEventListener('touchend', handleTouchEnd);
+      
+      container.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [pullY]);
 
@@ -1649,7 +1697,7 @@ export default function App() {
           y: (isRefreshing || showSuccess) ? 140 : Math.max(0, pullY),
         }}
         transition={{ type: 'spring', damping: 25, stiffness: 400 }}
-        className="relative z-10 bg-[#F8F9FB] min-h-screen"
+        className={`relative z-10 bg-[#F8F9FB] min-h-screen ${pullY > 0 ? 'select-none cursor-grabbing' : ''}`}
       >
         {/* Top Header */}
         <header className="px-6 pt-8 pb-4">
