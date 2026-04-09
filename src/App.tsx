@@ -30,7 +30,7 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { MENU_ITEMS, MenuItem } from './constants';
 
 interface CartItem extends MenuItem {
@@ -130,6 +130,14 @@ export default function App() {
   const [isAIThinking, setIsAIThinking] = useState(false);
   const [apiKeySelected, setApiKeySelected] = useState(false);
 
+  const hasEnvKey = useMemo(() => {
+    try {
+      return !!(process.env.GEMINI_API_KEY || (process.env as any).API_KEY);
+    } catch (e) {
+      return false;
+    }
+  }, []);
+
   const containerRef = React.useRef<HTMLDivElement>(null);
   const chatEndRef = React.useRef<HTMLDivElement>(null);
   const touchStartRef = React.useRef(0);
@@ -179,7 +187,12 @@ export default function App() {
     try {
       const menuList = MENU_ITEMS.map(item => `- ${item.name} (${item.category}): ${item.description}`).join('\n');
       
-      const apiKey = process.env.GEMINI_API_KEY || (process.env as any).API_KEY;
+      let apiKey = '';
+      try {
+        apiKey = process.env.GEMINI_API_KEY || (process.env as any).API_KEY;
+      } catch (e) {
+        // process might be undefined in some environments
+      }
 
       if (!apiKey && (window as any).aistudio) {
         const selected = await (window as any).aistudio.hasSelectedApiKey();
@@ -190,7 +203,12 @@ export default function App() {
       }
 
       // Create a fresh AI instance to ensure we have the latest environment variables
-      const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || (process.env as any).API_KEY });
+      let finalApiKey = '';
+      try {
+        finalApiKey = process.env.GEMINI_API_KEY || (process.env as any).API_KEY;
+      } catch (e) {}
+      
+      const genAI = new GoogleGenAI({ apiKey: finalApiKey });
 
       // Filter history: 
       // 1. Skip the initial model greeting (Gemini history must start with user)
@@ -221,9 +239,10 @@ export default function App() {
       6. Ingatkan pelanggan bahwa menu kami mengandung bahan yang tidak halal jika mereka bertanya tentang kehalalan.`;
 
       const chat = genAI.chats.create({
-        model: "gemini-3-flash-preview",
+        model: "gemini-3.1-flash-lite-preview",
         config: {
           systemInstruction: systemInstruction,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
         },
         history: history
       });
@@ -289,7 +308,9 @@ export default function App() {
     if (savedOrders) setOrders(JSON.parse(savedOrders));
     if (savedHistory) setSearchHistory(JSON.parse(savedHistory));
     if (savedTours) setCompletedTours(JSON.parse(savedTours));
-  }, [isLoading]);
+
+    return () => clearTimeout(timer);
+  }, []);
 
   // Trigger tours on tab change or initial load
   useEffect(() => {
@@ -2049,7 +2070,7 @@ export default function App() {
 
               {/* Input Area */}
               <div className="bg-white p-6 pb-10 border-t border-stone-100 shadow-[0_-10px_40px_rgba(0,0,0,0.02)]">
-                {(!process.env.GEMINI_API_KEY && !(process.env as any).API_KEY && !apiKeySelected && (window as any).aistudio) ? (
+                {(!hasEnvKey && !apiKeySelected && (window as any).aistudio) ? (
                   <div className="flex flex-col items-center gap-3 p-4 bg-orange-50 rounded-2xl border border-orange-100">
                     <p className="text-xs text-orange-800 text-center font-medium">
                       Hubungkan API Key untuk mulai mengobrol dengan Koki AI di link publik ini.
