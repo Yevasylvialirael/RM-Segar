@@ -132,7 +132,9 @@ export default function App() {
 
   const hasEnvKey = useMemo(() => {
     try {
-      return !!(process.env.GEMINI_API_KEY || (process.env as any).API_KEY);
+      // Vite replaces process.env.GEMINI_API_KEY with a string at build time
+      const key = process.env.GEMINI_API_KEY;
+      return !!key && key !== 'undefined' && key !== '';
     } catch (e) {
       return false;
     }
@@ -189,10 +191,9 @@ export default function App() {
       
       let apiKey = '';
       try {
-        apiKey = process.env.GEMINI_API_KEY || (process.env as any).API_KEY;
-      } catch (e) {
-        // process might be undefined in some environments
-      }
+        // Safe access to the replaced string
+        apiKey = process.env.GEMINI_API_KEY;
+      } catch (e) {}
 
       if (!apiKey && (window as any).aistudio) {
         const selected = await (window as any).aistudio.hasSelectedApiKey();
@@ -205,7 +206,7 @@ export default function App() {
       // Create a fresh AI instance to ensure we have the latest environment variables
       let finalApiKey = '';
       try {
-        finalApiKey = process.env.GEMINI_API_KEY || (process.env as any).API_KEY;
+        finalApiKey = process.env.GEMINI_API_KEY;
       } catch (e) {}
       
       const genAI = new GoogleGenAI({ apiKey: finalApiKey });
@@ -295,19 +296,23 @@ export default function App() {
       setIsLoading(false);
     }, 2500);
 
-    const savedCart = localStorage.getItem('rm_segar_cart');
-    const savedFavs = localStorage.getItem('rm_segar_favs');
-    const savedUser = localStorage.getItem('rm_segar_user');
-    const savedOrders = localStorage.getItem('rm_segar_orders');
-    const savedHistory = localStorage.getItem('rm_segar_search_history');
-    const savedTours = localStorage.getItem('rm_segar_completed_tours');
-    
-    if (savedCart) setCart(JSON.parse(savedCart));
-    if (savedFavs) setFavorites(JSON.parse(savedFavs));
-    if (savedUser) setUser(JSON.parse(savedUser));
-    if (savedOrders) setOrders(JSON.parse(savedOrders));
-    if (savedHistory) setSearchHistory(JSON.parse(savedHistory));
-    if (savedTours) setCompletedTours(JSON.parse(savedTours));
+    try {
+      const savedCart = localStorage.getItem('rm_segar_cart');
+      const savedFavs = localStorage.getItem('rm_segar_favs');
+      const savedUser = localStorage.getItem('rm_segar_user');
+      const savedOrders = localStorage.getItem('rm_segar_orders');
+      const savedHistory = localStorage.getItem('rm_segar_search_history');
+      const savedTours = localStorage.getItem('rm_segar_completed_tours');
+      
+      if (savedCart) setCart(JSON.parse(savedCart));
+      if (savedFavs) setFavorites(JSON.parse(savedFavs));
+      if (savedUser) setUser(JSON.parse(savedUser));
+      if (savedOrders) setOrders(JSON.parse(savedOrders));
+      if (savedHistory) setSearchHistory(JSON.parse(savedHistory));
+      if (savedTours) setCompletedTours(JSON.parse(savedTours));
+    } catch (e) {
+      console.error("LocalStorage error:", e);
+    }
 
     return () => clearTimeout(timer);
   }, []);
@@ -1521,106 +1526,36 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F8F9FB] pb-32 overflow-x-hidden relative flex flex-col items-center">
       <div className="w-full max-w-5xl">
-        <AnimatePresence>
-          {isLoading && (
-          <motion.div 
-            initial={{ opacity: 1 }}
-            exit={{ opacity: 0, y: -20 }}
-            transition={{ duration: 0.5 }}
-            className="fixed inset-0 z-[100] bg-white flex flex-col items-center justify-center"
-          >
-            <motion.div
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ 
-                duration: 0.8,
-                ease: "easeOut"
-              }}
-              className="relative mb-8"
-            >
-              {/* Animated Logo Container */}
-              <motion.div 
-                animate={{ 
-                  y: [0, -15, 0],
-                }}
-                transition={{ 
-                  repeat: Infinity, 
-                  duration: 2,
-                  ease: "easeInOut"
-                }}
-                className="w-32 h-32 bg-orange-500 rounded-[40px] shadow-2xl shadow-orange-200 flex items-center justify-center text-white relative overflow-hidden"
-              >
-                <MainLogo size={64} />
-                
-                {/* Shine effect */}
-                <motion.div 
-                  animate={{ 
-                    x: [-150, 150]
-                  }}
-                  transition={{ 
-                    repeat: Infinity, 
-                    duration: 1.5,
-                    repeatDelay: 0.5
-                  }}
-                  className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent skew-x-12"
-                />
-              </motion.div>
-
-              {/* Decorative particles */}
-              {[...Array(6)].map((_, i) => (
-                <motion.div
-                  key={i}
-                  animate={{ 
-                    scale: [0, 1, 0],
-                    x: [0, (i % 2 === 0 ? 40 : -40) * Math.random()],
-                    y: [0, (i < 3 ? 40 : -40) * Math.random()],
-                  }}
-                  transition={{ 
-                    repeat: Infinity, 
-                    duration: 2,
-                    delay: i * 0.2
-                  }}
-                  className="absolute top-1/2 left-1/2 w-2 h-2 bg-orange-300 rounded-full"
-                />
-              ))}
-            </motion.div>
-
-            <motion.div
-              initial={{ y: 20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              transition={{ delay: 0.5, duration: 0.8 }}
-              className="text-center"
-            >
-              <h1 className="text-3xl font-black text-stone-900 tracking-tighter mb-2">
-                RUMAH MAKAN <span className="text-orange-500">SEGAR</span>
-              </h1>
-              <div className="flex items-center justify-center gap-2">
-                <div className="w-8 h-1 bg-orange-500 rounded-full" />
-                <p className="text-[10px] text-stone-400 font-black uppercase tracking-[0.3em]">
-                  Otentik Kalimantan Barat
-                </p>
-                <div className="w-8 h-1 bg-orange-500 rounded-full" />
-              </div>
-            </motion.div>
-
-            {/* Loading Bar */}
-            <div className="absolute bottom-12 left-12 right-12 h-1.5 bg-stone-100 rounded-full overflow-hidden">
-              <motion.div 
-                initial={{ x: "-100%" }}
-                animate={{ x: "0%" }}
-                transition={{ duration: 2, ease: "easeInOut" }}
-                className="h-full bg-orange-500"
-              />
+        {isLoading ? (
+          <div className="fixed inset-0 z-[100] bg-white flex flex-col items-center justify-center">
+            <div className="w-32 h-32 bg-orange-500 rounded-[40px] flex items-center justify-center text-white mb-4">
+              <MainLogo size={64} />
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            <div className="text-orange-500 font-bold animate-pulse">Memuat RM Segar...</div>
+          </div>
+        ) : (
+          <>
+            {/* Success Message Overlay */}
+            <AnimatePresence>
+              {showSuccess && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="fixed top-24 left-1/2 -translate-x-1/2 z-[60] bg-green-500 text-white px-6 py-3 rounded-2xl shadow-xl flex items-center gap-3 font-bold"
+                >
+                  <div className="w-6 h-6 bg-white/20 rounded-full flex items-center justify-center">
+                    <Check size={14} />
+                  </div>
+                  Berhasil diperbarui!
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-      {/* Pull to Refresh Panda Animation */}
-      <div 
-        className="absolute top-0 left-0 right-0 flex justify-center pointer-events-none z-0"
-        style={{ height: 300 }}
-      >
+            <div 
+              className="absolute top-0 left-0 right-0 flex justify-center pointer-events-none z-0"
+              style={{ height: 300 }}
+            >
         <AnimatePresence>
           {(pullY > 20 || isRefreshing || showSuccess) && (
             <motion.div 
@@ -2234,11 +2169,13 @@ export default function App() {
           </>
         )}
       </AnimatePresence>
+          </>
+        )}
 
-      {/* Onboarding Overlay */}
-      <AnimatePresence>
-        {activeTour && renderOnboarding()}
-      </AnimatePresence>
+        {/* Onboarding Overlay */}
+        <AnimatePresence>
+          {activeTour && renderOnboarding()}
+        </AnimatePresence>
       </div>
     </div>
   );
