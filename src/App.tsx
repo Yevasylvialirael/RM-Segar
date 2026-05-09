@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { 
   ShoppingBag, 
   MapPin, 
@@ -27,15 +27,31 @@ import {
   Bot,
   Send,
   MessageCircle,
-  MessageSquare
+  MessageSquare,
+  QrCode,
+  CreditCard,
+  Banknote,
+  Wallet,
+  Share2,
+  MoreHorizontal,
+  Mic,
+  SendHorizontal,
+  Calendar,
+  Clock,
+  Edit3,
+  HelpCircle,
+  RefreshCw,
+  Gamepad2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { QRCodeSVG } from 'qrcode.react';
 import { MENU_ITEMS, MenuItem } from './constants';
+import { QRScanner } from './components/QRScanner';
 
 interface CartItem extends MenuItem {
   quantity: number;
   option?: 'Es' | 'Panas';
+  sweetness?: 'Manis' | 'Tawar' | 'Sedikit Gula';
   note?: string;
 }
 
@@ -44,7 +60,27 @@ interface Order {
   date: string;
   items: CartItem[];
   totalItems: number;
-  orderType: 'Makan di Tempat' | 'Bungkus';
+  orderType: 'Makan di Tempat' | 'Bungkus' | 'Jadwalkan';
+  paymentMethod: 'Tunai' | 'Transfer';
+  note?: string;
+  schedule?: {
+    type: 'Jam' | 'Hari';
+    date?: string;
+    time?: string;
+    dayOfWeek?: string;
+    dayOfMonth?: number;
+  }
+}
+
+interface Reservation {
+  id: string;
+  date: string;
+  time: string;
+  attendees: number;
+  note: string;
+  status: 'Akan Datang' | 'Selesai' | 'Dibatalkan';
+  orderType?: 'Makan di Tempat' | 'Bungkus';
+  items?: CartItem[];
 }
 
 const MenuIcon = ({ item, size = 32, className = "" }: { item: MenuItem, size?: number, className?: string }) => {
@@ -91,6 +127,25 @@ const MainLogo = ({ size = 64, className = "" }: { size?: number, className?: st
   );
 };
 
+import { chatWithPanda } from './services/geminiService';
+import { db, auth, handleFirestoreError, OperationType } from './firebase';
+import { 
+  collection, 
+  setDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp, 
+  where 
+} from 'firebase/firestore';
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut 
+} from 'firebase/auth';
+
 export default function App() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
@@ -101,8 +156,19 @@ export default function App() {
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState('home');
   const [showOrderHistory, setShowOrderHistory] = useState(false);
+  const [showReservations, setShowReservations] = useState(false);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [scheduleType, setScheduleType] = useState<'Jam' | 'Hari'>('Jam');
+  const [scheduleDate, setScheduleDate] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('');
+  const [scheduleHeadcount, setScheduleHeadcount] = useState(2);
+  const [scheduleNote, setScheduleNote] = useState('');
+  const [orderNote, setOrderNote] = useState('');
+  const [showTutorial, setShowTutorial] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
-  const [user, setUser] = useState<{ phone: string } | null>(null);
+  const [user, setUser] = useState<{ id: string, phone: string, displayName?: string, photoURL?: string } | null>(null);
   const [loginPhone, setLoginPhone] = useState('62');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginMode, setLoginMode] = useState<'login' | 'forgot' | 'verify'>('login');
@@ -110,12 +176,64 @@ export default function App() {
   const [inputToken, setInputToken] = useState('');
   const [optionModalItem, setOptionModalItem] = useState<MenuItem | null>(null);
   const [selectedOption, setSelectedOption] = useState<'Es' | 'Panas'>('Es');
-  const [noteModalItem, setNoteModalItem] = useState<{ id: string, option?: 'Es' | 'Panas', note: string } | null>(null);
+  const [selectedSweetness, setSelectedSweetness] = useState<'Manis' | 'Tawar' | 'Sedikit Gula'>('Manis');
+  const [noteModalItem, setNoteModalItem] = useState<{ id: string, option?: 'Es' | 'Panas', sweetness?: 'Manis' | 'Tawar' | 'Sedikit Gula', note: string } | null>(null);
   const [orderType, setOrderType] = useState<'Makan di Tempat' | 'Bungkus'>('Makan di Tempat');
+  const [paymentMethod, setPaymentMethod] = useState<'Tunai' | 'Transfer'>('Tunai');
   const [pullY, setPullY] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+
+  const handleScanSuccess = useCallback((decodedText: string) => {
+    try {
+      const data = JSON.parse(decodedText);
+      if (data.type === 'rm_segar_order' && data.items) {
+        const newItems = data.items.map((i: any) => {
+          const menu = MENU_ITEMS.find(m => m.id === i.id);
+          if (menu) return { ...menu, quantity: i.q, option: i.o };
+          return null;
+        }).filter(Boolean);
+        
+        if (newItems.length > 0) {
+          setCart(prev => {
+            const merged = [...prev];
+            newItems.forEach((newItem: any) => {
+              const existingIdx = merged.findIndex(curr => curr.id === newItem.id && curr.option === newItem.option);
+              if (existingIdx !== -1) {
+                merged[existingIdx].quantity += newItem.quantity;
+              } else {
+                merged.push(newItem as CartItem);
+              }
+            });
+            return merged;
+          });
+          setIsCartOpen(true);
+          setShowScanner(false);
+          // Auto-scroll to cart or notify user
+        }
+      }
+    } catch (e) {
+      console.error("Invalid QR Code content", e);
+    }
+  }, [setCart, setIsCartOpen, setShowScanner]);
+  useEffect(() => {
+    const savedCart = localStorage.getItem('rm_segar_cart');
+    const savedFavorites = localStorage.getItem('rm_segar_favorites');
+
+    if (savedCart) setCart(JSON.parse(savedCart));
+    if (savedFavorites) setFavorites(JSON.parse(savedFavorites));
+    
+    setIsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('rm_segar_cart', JSON.stringify(cart));
+  }, [cart]);
+
+  useEffect(() => {
+    localStorage.setItem('rm_segar_favorites', JSON.stringify(favorites));
+  }, [favorites]);
   
   // Onboarding State
   const [activeTour, setActiveTour] = useState<'home' | 'search' | 'heart' | 'profile' | 'about' | null>(null);
@@ -128,28 +246,14 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'model', text: string }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isAIThinking, setIsAIThinking] = useState(false);
-  const [apiKeySelected, setApiKeySelected] = useState(false);
-
-  const hasEnvKey = useMemo(() => {
-    try {
-      // Vite replaces process.env.GEMINI_API_KEY with a string at build time
-      const key = process.env.GEMINI_API_KEY;
-      return !!key && key !== 'undefined' && key !== '';
-    } catch (e) {
-      return false;
-    }
-  }, []);
-
-  const containerRef = React.useRef<HTMLDivElement>(null);
-  const chatEndRef = React.useRef<HTMLDivElement>(null);
-  const touchStartRef = React.useRef(0);
-  const mouseStartRef = React.useRef<number>(-1);
+  const [pandaMood, setPandaMood] = useState<'idle' | 'thinking' | 'happy'>('idle');
+  const [apiKeyMatched, setApiKeyMatched] = useState(false);
 
   useEffect(() => {
     const checkKey = async () => {
       if ((window as any).aistudio) {
         const selected = await (window as any).aistudio.hasSelectedApiKey();
-        setApiKeySelected(selected);
+        setApiKeyMatched(selected);
       }
     };
     checkKey();
@@ -159,12 +263,115 @@ export default function App() {
     if ((window as any).aistudio) {
       try {
         await (window as any).aistudio.openSelectKey();
-        setApiKeySelected(true);
+        setApiKeyMatched(true);
+        // Retry last message if possible or just show success
+        setChatMessages(prev => [...prev, { role: 'model', text: "Mantap! AI sudah terhubung. Ada yang bisa saya bantu sekarang? 🐼" }]);
       } catch (err) {
         console.error("Error opening key selector:", err);
       }
     }
   };
+  // Firebase Auth sync
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        setUser({
+          id: firebaseUser.uid,
+          phone: firebaseUser.phoneNumber || 'Via Google',
+          displayName: firebaseUser.displayName || undefined,
+          photoURL: firebaseUser.photoURL || undefined
+        });
+        
+        // Sync Profile to Firestore
+        const userRef = doc(db, 'users', firebaseUser.uid);
+        setDoc(userRef, {
+          userId: firebaseUser.uid,
+          phone: firebaseUser.phoneNumber || 'Via Google',
+          displayName: firebaseUser.displayName || '',
+          photoURL: firebaseUser.photoURL || '',
+          updatedAt: serverTimestamp()
+        }, { merge: true }).catch(err => handleFirestoreError(err, OperationType.WRITE, 'users'));
+
+      } else {
+        setUser(null);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Firestore Data Sync
+  useEffect(() => {
+    if (!user) {
+      setOrders([]);
+      setReservations([]);
+      return;
+    }
+
+    const ordersQuery = query(
+      collection(db, 'orders'),
+      where('userId', '==', user.id),
+      orderBy('createdAt', 'desc')
+    );
+    const ordersUnsub = onSnapshot(ordersQuery, (snapshot) => {
+      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Order));
+      setOrders(docs);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'orders'));
+
+    const resQuery = query(
+      collection(db, 'reservations'),
+      where('userId', '==', user.id),
+      orderBy('createdAt', 'desc')
+    );
+    const resUnsub = onSnapshot(resQuery, (snapshot) => {
+      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Reservation));
+      setReservations(docs);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'reservations'));
+
+    return () => {
+      ordersUnsub();
+      resUnsub();
+    };
+  }, [user]);
+
+  const handleGoogleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Google Login Error:", error);
+    }
+  };
+
+  const [gameScore, setGameScore] = useState(0);
+  const [highScore, setHighScore] = useState(0);
+
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const chatEndRef = React.useRef<HTMLDivElement>(null);
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const mouseStartRef = React.useRef<number>(-1);
+  const touchStartRef = React.useRef(0);
+
+  const [scrollY, setScrollY] = useState(0);
+  const [isScrolling, setIsScrolling] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = (e: any) => {
+      const target = e.target;
+      if (target.scrollTop !== undefined) {
+        setScrollY(target.scrollTop);
+        setIsScrolling(true);
+        const timer = setTimeout(() => setIsScrolling(false), 500);
+        return () => clearTimeout(timer);
+      }
+    };
+    
+    const scrollEl = scrollRef.current;
+    if (scrollEl) {
+      scrollEl.addEventListener('scroll', handleScroll);
+      return () => scrollEl.removeEventListener('scroll', handleScroll);
+    }
+  }, []);
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -182,149 +389,258 @@ export default function App() {
     if (!message.trim() || isAIThinking) return;
 
     const newUserMessage = { role: 'user' as const, text: message };
-    setChatMessages(prev => [...prev, newUserMessage]);
+    const updatedMessages = [...chatMessages, newUserMessage];
+    setChatMessages(updatedMessages);
     setChatInput('');
     setIsAIThinking(true);
+    setPandaMood('thinking');
 
     try {
-      const menuList = MENU_ITEMS.map(item => `- ${item.name} (${item.category}): ${item.description}`).join('\n');
-      
-      let apiKey = '';
-      try {
-        // Safe access to the replaced string
-        apiKey = process.env.GEMINI_API_KEY;
-      } catch (e) {}
+      const menuListString = MENU_ITEMS.map(item => `- ${item.name} (${item.category}): ${item.description}`).join('\n');
+      const history = chatMessages.slice(-11).map(m => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.text }]
+      }));
 
-      if (!apiKey && (window as any).aistudio) {
-        const selected = await (window as any).aistudio.hasSelectedApiKey();
-        if (!selected) {
-          await handleOpenSelectKey();
-          // After opening, we proceed as the key should be injected
-        }
-      }
+      const resData = await chatWithPanda(message, history, menuListString);
+      let fullText = resData.text || "";
+      let currentCart = [...cart];
+      let pendingWaUrl = "";
 
-      // Create a fresh AI instance to ensure we have the latest environment variables
-      let finalApiKey = '';
-      try {
-        finalApiKey = process.env.GEMINI_API_KEY;
-      } catch (e) {}
-      
-      const genAI = new GoogleGenAI({ apiKey: finalApiKey });
-
-      // Filter history: 
-      // 1. Skip the initial model greeting (Gemini history must start with user)
-      // 2. Skip any previous error messages to avoid polluting the context
-      const history = chatMessages
-        .filter((msg, index) => {
-          if (index === 0 && msg.role === 'model') return false;
-          if (msg.text.includes("Ups, koki AI kami sedang sibuk")) return false;
-          return true;
-        })
-        .map(msg => ({
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.text }]
-        }));
-
-      const systemInstruction = `Anda adalah asisten kuliner RM Segar, sebuah restoran Chinese Food khas Kalimantan Barat. 
-      Tugas Anda adalah membantu pelanggan memilih menu yang tepat berdasarkan keinginan mereka.
-      
-      Berikut adalah daftar menu kami:
-      ${menuList}
-      
-      Aturan:
-      1. Selalu bersikap ramah, sopan, dan menggunakan bahasa Indonesia yang santai.
-      2. Jika pelanggan bingung, tanyakan preferensi mereka (misal: suka pedas? ingin nasi atau mie? ingin minuman segar?).
-      3. Berikan rekomendasi yang spesifik dari daftar menu di atas.
-      4. Jelaskan mengapa menu tersebut cocok untuk mereka.
-      5. Jangan merekomendasikan menu yang tidak ada di daftar.
-      6. Ingatkan pelanggan bahwa menu kami mengandung bahan yang tidak halal jika mereka bertanya tentang kehalalan.`;
-
-      const chat = genAI.chats.create({
-        model: "gemini-3.1-flash-lite-preview",
-        config: {
-          systemInstruction: systemInstruction,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
-        },
-        history: history
-      });
-
-      const responseStream = await chat.sendMessageStream({
-        message: message
-      });
-      
-      let fullText = "";
-      setChatMessages(prev => [...prev, { role: 'model', text: "" }]);
-      
-      for await (const chunk of responseStream) {
-        const chunkText = chunk.text;
-        if (chunkText) {
-          fullText += chunkText;
-          setChatMessages(prev => {
-            const newMessages = [...prev];
-            if (newMessages.length > 0) {
-              newMessages[newMessages.length - 1] = { 
-                ...newMessages[newMessages.length - 1], 
-                text: fullText 
-              };
+      if (resData.functionCalls && resData.functionCalls.length > 0) {
+        const addedItems: string[] = [];
+        for (const call of resData.functionCalls) {
+          const args: any = call.args || {};
+          if (call.name === 'add_item_to_cart') {
+            let item = MENU_ITEMS.find(m => m.id === args.itemId);
+            if (!item && args.itemId) {
+              const searchTerm = args.itemId.toString().toLowerCase().replace(/\s+/g, '');
+              item = MENU_ITEMS.find(m => m.name.toLowerCase().replace(/\s+/g, '').includes(searchTerm));
             }
-            return newMessages;
-          });
+            if (item) {
+              const qty = Math.max(1, Number(args.quantity) || 1);
+              const opt = args.option as 'Es' | 'Panas' | undefined;
+              const swt = args.sweetness as 'Manis' | 'Tawar' | 'Sedikit Gula' | undefined;
+              
+              const idx = currentCart.findIndex(i => i.id === item!.id && i.option === opt && i.sweetness === swt);
+              if (idx !== -1) {
+                currentCart[idx] = { ...currentCart[idx], quantity: currentCart[idx].quantity + qty };
+              } else {
+                currentCart.push({ ...item, quantity: qty, option: opt, sweetness: swt, note: args.note });
+              }
+              setCart([...currentCart]);
+              
+              let desc = `${item.name} (${qty}x)`;
+              const details = [];
+              if (opt) details.push(opt);
+              if (swt) details.push(swt);
+              if (args.note) details.push(args.note);
+              if (details.length > 0) desc += ` [${details.join(', ')}]`;
+              addedItems.push(desc);
+            }
+          }
+          if (call.name === 'finalize_order') {
+            const adminPhone = "6281258394293";
+            const orderId = Math.random().toString(36).substring(2, 6).toUpperCase();
+            
+            const orderDetails = currentCart.map(i => {
+              let line = `- ${i.name} (${i.quantity}x)`;
+              const details = [];
+              if (i.option) details.push(i.option);
+              if (i.sweetness) details.push(i.sweetness);
+              if (i.note) details.push(i.note);
+              if (details.length > 0) line += ` [${details.join(', ')}]`;
+              return line;
+            }).join('\n');
+            
+            const message = `*RM SEGAR - PESANAN BARU #${orderId}*\n\n${orderDetails}\n\n*Detail:*\n- Orang: ${args.headcount}\n- Tipe: ${args.orderType}\n- Bayar: ${args.paymentMethod}\n- Pesan: ${args.overallNote || '-'}`;
+            pendingWaUrl = `https://wa.me/${adminPhone}?text=${encodeURIComponent(message)}`;
+            const orderData: Order = {
+              id: orderId,
+              date: new Date().toLocaleDateString(),
+              items: [...currentCart],
+              totalItems: currentCart.reduce((s, i) => s + i.quantity, 0),
+              orderType: args.orderType as any,
+              paymentMethod: args.paymentMethod as any,
+              note: args.overallNote
+            };
+            
+            // Persistent Backend Save
+            if (user) {
+              const orderRef = doc(db, 'orders', orderId);
+              setDoc(orderRef, {
+                ...orderData,
+                userId: user.id,
+                status: 'Pending',
+                createdAt: serverTimestamp()
+              }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'orders'));
+            }
+
+            setOrders(prev => [orderData, ...prev]);
+            setCart([]);
+            currentCart = [];
+            setShowSuccess(true);
+            setTimeout(() => setShowSuccess(false), 3000);
+            fullText += `\n\n✅ *PESANAN SIAP!*\n\nSilakan klik tombol **Kirim ke WhatsApp** di bawah ini untuk mengirimkan pesanan Kakak langsung ke Admin RM Segar agar segera diproses. 🎋`;
+            fullText += `\n\n[WA_LINK: ${pendingWaUrl}|Kirim Pesanan ke WhatsApp]`;
+          }
+          if (call.name === 'book_table') {
+            const adminPhone = "6281258394293";
+            const resId = Math.random().toString(36).substring(2, 6).toUpperCase();
+            
+            let foodDetails = "";
+            if (currentCart.length > 0) {
+              foodDetails = "\n\n*Pesanan Makanan (Pre-order):*\n" + 
+                currentCart.map(i => {
+                  let line = `- ${i.name} (${i.quantity}x)`;
+                  const details = [];
+                  if (i.option) details.push(i.option);
+                  if (i.sweetness) details.push(i.sweetness);
+                  if (i.note) details.push(i.note);
+                  if (details.length > 0) line += ` [${details.join(', ')}]`;
+                  return line;
+                }).join('\n');
+            }
+
+            const message = `*RM SEGAR - RESERVASI & PRE-ORDER*\n\nID: #${resId}\nNama: ${args.name}\nTanggal: ${args.date}\nJam: ${args.time}\nOrang: ${args.headcount} orang\nCatatan: ${args.note || '-'}${foodDetails}`;
+            
+            pendingWaUrl = `https://wa.me/${adminPhone}?text=${encodeURIComponent(message)}`;
+            const resData: Reservation = {
+              id: resId,
+              date: args.date,
+              time: args.time,
+              attendees: args.headcount,
+              note: args.note || '',
+              status: 'Akan Datang'
+            };
+
+            // Persistent Backend Save
+            if (user) {
+              const resRef = doc(db, 'reservations', resId);
+              setDoc(resRef, {
+                ...resData,
+                userId: user.id,
+                createdAt: serverTimestamp()
+              }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'reservations'));
+            }
+
+            setReservations(prev => [resData, ...prev]);
+            
+            // Clear cart if pre-order was included
+            if (currentCart.length > 0) {
+              setCart([]);
+              currentCart = [];
+            }
+
+            setShowSuccess(true);
+            setTimeout(() => setShowSuccess(false), 3000);
+            fullText += `\n\n✅ *RESERVASI BERHASIL!*\n\nSilakan ketuk tombol di bawah untuk mengirim konfirmasi reservasi Kakak ke Admin via WhatsApp. 🎋`;
+            fullText += `\n\n[WA_LINK: ${pendingWaUrl}|Kirim Reservasi ke WhatsApp]`;
+          }
+          if (call.name === 'clear_cart') {
+            setCart([]);
+            currentCart = [];
+            fullText += "\n\nKeranjang sudah saya kosongkan ya! 🎋";
+          }
+          if (call.name === 'remove_item_from_cart') {
+            const idToRemove = args.itemId;
+            currentCart = currentCart.filter(i => i.id !== idToRemove);
+            setCart([...currentCart]);
+            fullText += `\n\nOke, item tersebut sudah saya hapus dari keranjang. 🎋`;
+          }
+        }
+        if (addedItems.length > 0) {
+          const itemList = addedItems.join(", ");
+          if (!fullText.includes("keranjang")) {
+            fullText += `\n\nOke Kak, ${itemList} sudah saya masukkan ke keranjang! Ada tambahan lagi menunya, atau sudah cukup? 🐼🎋`;
+          }
         }
       }
-    } catch (error) {
+
+      let finalResponse = fullText.trim();
+      if (!finalResponse || finalResponse === "🎋") {
+        finalResponse = "Sudah saya catat pesanan Kakak! Ada lagi yang mau ditambah atau mau langsung kirim ke WhatsApp Admin? 🐼🎋";
+      }
+      setChatMessages(prev => [...prev, { role: 'model', text: finalResponse }]);
+      
+      if (pendingWaUrl) {
+         try {
+           const link = document.createElement('a');
+           link.href = pendingWaUrl;
+           link.target = '_blank';
+           link.rel = 'noopener noreferrer';
+           document.body.appendChild(link);
+           link.click();
+           document.body.removeChild(link);
+         } catch (e) {
+           console.error("Auto-redirect blocked or failed:", e);
+         }
+      }
+      setPandaMood('happy');
+      setTimeout(() => setPandaMood('idle'), 3000);
+
+    } catch (error: any) {
       console.error("AI Error:", error);
-      setChatMessages(prev => [...prev, { role: 'model', text: "Ups, koki AI kami sedang sibuk menyiapkan pesanan. Coba lagi nanti ya!" }]);
+      
+      let errorMsg = error.message || "";
+      
+      // Deteksi error key atau auth agar muncul tombol 'Hubungkan'
+      if (!errorMsg || errorMsg.includes("API key") || errorMsg.includes("unauthorized") || errorMsg.includes("401") || errorMsg.includes("not found")) {
+        errorMsg = "Master Panda belum bisa masak nih karena Kakak belum Hubungkan AI! 🐼\n\n" +
+                   "Silakan klik tombol di bawah untuk menyambungkan Kunci API Kakak (gratis kok!). 🎋";
+      } else if (errorMsg === "Failed to fetch" || errorMsg.includes("network")) {
+        errorMsg = "Master Panda lagi ada kendala koneksi nih! 🐼\n\n" +
+                   "Tunggu sebentar ya, atau coba refresh halamannya. Pastikan koneksi internet aman! 🎋";
+      }
+      
+      setChatMessages(prev => [...prev, { role: 'model', text: errorMsg }]);
+      setPandaMood('idle');
     } finally {
       setIsAIThinking(false);
     }
   };
+
+
 
   const startAIChat = () => {
     setIsChatOpen(true);
     if (chatMessages.length === 0) {
       setChatMessages([{ 
         role: 'model', 
-        text: "Halo! Saya Koki AI RM Segar. Bingung mau makan apa hari ini? Beritahu saya apa yang Anda suka, dan saya akan carikan menu yang paling pas buat Anda! 🐼🍜" 
+        text: "Halo! Saya Master Panda, Koki AI RM Segar. Ada yang bisa saya bantu hari ini? 🐼 [OPSI: Pesan Makanan|Reservasi Meja]" 
       }]);
     }
   };
 
-  // Load cart, favorites, user and orders from localStorage on mount
+  // Load items from localStorage on mount
   useEffect(() => {
-    // Simulate initial loading
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 2500);
+    const savedCart = localStorage.getItem('rm_segar_cart');
+    const savedFavs = localStorage.getItem('rm_segar_favs');
+    const savedUser = localStorage.getItem('rm_segar_user');
+    const savedHistory = localStorage.getItem('rm_segar_search_history');
+    const savedTours = localStorage.getItem('rm_segar_completed_tours');
+    const savedHighScore = localStorage.getItem('rm_segar_game_highscore');
+    
+    if (savedCart) setCart(JSON.parse(savedCart));
+    if (savedFavs) setFavorites(JSON.parse(savedFavs));
+    // User and data are now managed via Firebase Auth & Firestore
+    // Orders and Reservations are now synced via Firebase onSnapshot
+    if (savedHistory) setSearchHistory(JSON.parse(savedHistory));
+    if (savedTours) setCompletedTours(JSON.parse(savedTours));
+    if (savedHighScore) setHighScore(parseInt(savedHighScore));
 
-    try {
-      const savedCart = localStorage.getItem('rm_segar_cart');
-      const savedFavs = localStorage.getItem('rm_segar_favs');
-      const savedUser = localStorage.getItem('rm_segar_user');
-      const savedOrders = localStorage.getItem('rm_segar_orders');
-      const savedHistory = localStorage.getItem('rm_segar_search_history');
-      const savedTours = localStorage.getItem('rm_segar_completed_tours');
-      
-      if (savedCart) setCart(JSON.parse(savedCart));
-      if (savedFavs) setFavorites(JSON.parse(savedFavs));
-      if (savedUser) setUser(JSON.parse(savedUser));
-      if (savedOrders) setOrders(JSON.parse(savedOrders));
-      if (savedHistory) setSearchHistory(JSON.parse(savedHistory));
-      if (savedTours) setCompletedTours(JSON.parse(savedTours));
-    } catch (e) {
-      console.error("LocalStorage error:", e);
-    }
-
-    return () => clearTimeout(timer);
+    // Finish loading
+    setIsLoading(false);
   }, []);
 
   // Trigger tours on tab change or initial load
   useEffect(() => {
     if (isLoading) return;
 
-    const triggerTour = (context: 'home' | 'search' | 'heart' | 'profile' | 'about') => {
-      if (!completedTours[context]) {
+    const triggerTour = (context: string) => {
+      if (onboardingSteps[context] && !completedTours[context]) {
         const timer = setTimeout(() => {
-          setActiveTour(context);
+          setActiveTour(context as any);
           setTourStep(0);
         }, 600);
         return () => clearTimeout(timer);
@@ -346,7 +662,10 @@ export default function App() {
     }
 
     const updatePosition = () => {
-      const step = onboardingSteps[activeTour][tourStep];
+      const steps = onboardingSteps[activeTour];
+      if (!steps) return;
+      
+      const step = steps[tourStep];
       if (!step || step.position === 'center') {
         setSpotlightRect({ x: window.innerWidth / 2, y: window.innerHeight / 2, width: 0, height: 0, rx: 0 });
         return;
@@ -382,7 +701,7 @@ export default function App() {
     if (!container) return;
 
     const handleTouchStart = (e: TouchEvent) => {
-      if (window.scrollY <= 0) {
+      if (window.scrollY <= 0 && e.touches && e.touches[0]) {
         touchStartRef.current = e.touches[0].clientY;
       } else {
         touchStartRef.current = -1;
@@ -390,7 +709,7 @@ export default function App() {
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (touchStartRef.current === -1 || window.scrollY > 0) return;
+      if (touchStartRef.current === -1 || window.scrollY > 0 || !e.touches || !e.touches[0]) return;
 
       const currentY = e.touches[0].clientY;
       const diff = currentY - touchStartRef.current;
@@ -489,10 +808,6 @@ export default function App() {
   }, [favorites]);
 
   useEffect(() => {
-    localStorage.setItem('rm_segar_orders', JSON.stringify(orders));
-  }, [orders]);
-
-  useEffect(() => {
     localStorage.setItem('rm_segar_search_history', JSON.stringify(searchHistory));
   }, [searchHistory]);
 
@@ -500,6 +815,18 @@ export default function App() {
     if (user) localStorage.setItem('rm_segar_user', JSON.stringify(user));
     else localStorage.removeItem('rm_segar_user');
   }, [user]);
+
+  useEffect(() => {
+    localStorage.setItem('rm_segar_game_highscore', highScore.toString());
+  }, [highScore]);
+
+  const clearChat = () => {
+    setChatMessages([{ 
+      role: 'model', 
+      text: "Halo! Saya Master Panda, Koki AI RM Segar. Ada yang bisa saya bantu hari ini? 🐼 [OPSI: Pesan Makanan|Reservasi Meja]" 
+    }]);
+    localStorage.removeItem('rm_segar_chat_history');
+  };
 
   const categories = useMemo(() => {
     return [
@@ -533,30 +860,31 @@ export default function App() {
     return MENU_ITEMS.slice(0, 4);
   }, []);
 
-  const addToCart = (item: MenuItem, option?: 'Es' | 'Panas') => {
-    if (item.hasOptions && !option) {
+  const addToCart = (item: MenuItem, option?: 'Es' | 'Panas', sweetness?: 'Manis' | 'Tawar' | 'Sedikit Gula') => {
+    if (item.hasOptions && (!option || !sweetness)) {
       setOptionModalItem(item);
       setSelectedOption('Es');
+      setSelectedSweetness('Manis');
       return;
     }
 
     setCart(prev => {
-      const existing = prev.find(i => i.id === item.id && i.option === option);
+      const existing = prev.find(i => i.id === item.id && i.option === option && i.sweetness === sweetness);
       if (existing) {
-        return prev.map(i => (i.id === item.id && i.option === option) ? { ...i, quantity: i.quantity + 1 } : i);
+        return prev.map(i => (i.id === item.id && i.option === option && i.sweetness === sweetness) ? { ...i, quantity: i.quantity + 1 } : i);
       }
-      return [...prev, { ...item, quantity: 1, option }];
+      return [...prev, { ...item, quantity: 1, option, sweetness }];
     });
     setOptionModalItem(null);
   };
 
-  const removeFromCart = (id: string, option?: 'Es' | 'Panas') => {
+  const removeFromCart = (id: string, option?: 'Es' | 'Panas', sweetness?: 'Manis' | 'Tawar' | 'Sedikit Gula') => {
     setCart(prev => {
-      const existing = prev.find(i => i.id === id && i.option === option);
+      const existing = prev.find(i => i.id === id && i.option === option && i.sweetness === sweetness);
       if (existing && existing.quantity > 1) {
-        return prev.map(i => (i.id === id && i.option === option) ? { ...i, quantity: i.quantity - 1 } : i);
+        return prev.map(i => (i.id === id && i.option === option && i.sweetness === sweetness) ? { ...i, quantity: i.quantity - 1 } : i);
       }
-      return prev.filter(i => !(i.id === id && i.option === option));
+      return prev.filter(i => !(i.id === id && i.option === option && i.sweetness === sweetness));
     });
   };
 
@@ -566,8 +894,32 @@ export default function App() {
     );
   };
 
-  const clearItemFromCart = (id: string, option?: 'Es' | 'Panas') => {
-    setCart(prev => prev.filter(i => !(i.id === id && i.option === option)));
+  const clearItemFromCart = (id: string, option?: 'Es' | 'Panas', sweetness?: 'Manis' | 'Tawar' | 'Sedikit Gula') => {
+    setCart(prev => prev.filter(i => !(i.id === id && i.option === option && i.sweetness === sweetness)));
+  };
+
+  const toggleItemOption = (id: string, currentOption?: 'Es' | 'Panas', sweetness?: 'Manis' | 'Tawar' | 'Sedikit Gula') => {
+    if (!currentOption) return;
+    const newOption = currentOption === 'Es' ? 'Panas' : 'Es';
+    setCart(prev => {
+      const itemToToggle = prev.find(i => i.id === id && i.option === currentOption && i.sweetness === sweetness);
+      if (!itemToToggle) return prev;
+
+      // Special case: if we toggle, we might collide with an existing item of the same ID but different option
+      const existingWithNewOption = prev.find(i => i.id === id && i.option === newOption && i.sweetness === sweetness);
+      if (existingWithNewOption) {
+        return prev.map(item => {
+          if (item.id === id && item.option === newOption && item.sweetness === sweetness) {
+            return { ...item, quantity: item.quantity + itemToToggle.quantity };
+          }
+          return item;
+        }).filter(item => !(item.id === id && item.option === currentOption && item.sweetness === sweetness));
+      }
+      
+      return prev.map(item => 
+        (item.id === id && item.option === currentOption && item.sweetness === sweetness) ? { ...item, option: newOption } : item
+      );
+    });
   };
 
   const handleLogin = () => {
@@ -582,7 +934,15 @@ export default function App() {
         const token = Math.floor(1000 + Math.random() * 9000).toString();
         setResetToken(token);
         const message = `Halo! Token pemulihan kata sandi RM Segar Anda adalah: *${token}*`;
-        window.open(`https://wa.me/${loginPhone.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
+        const waUrl = `https://wa.me/${loginPhone.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`;
+        const link = document.createElement('a');
+        link.href = waUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
         setLoginMode('verify');
         alert(`Token simulasi dikirim ke WA: ${token}`);
       }
@@ -599,13 +959,18 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    setUser(null);
-    setLoginMode('login');
-    setLoginPhone('62');
-    setShowOrderHistory(false);
-    setShowAbout(false);
-    setActiveTab('home');
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      setLoginMode('login');
+      setLoginPhone('62');
+      setShowOrderHistory(false);
+      setShowAbout(false);
+      setActiveTab('home');
+    } catch (error) {
+      console.error("Logout Error:", error);
+    }
   };
 
   const handleTabChange = (tab: string) => {
@@ -618,6 +983,7 @@ export default function App() {
     }
     setActiveTab(tab);
     setShowOrderHistory(false);
+    setShowReservations(false);
     setShowAbout(false);
   };
 
@@ -864,9 +1230,9 @@ export default function App() {
     );
   };
 
-  const updateNote = (id: string, option: 'Es' | 'Panas' | undefined, note: string) => {
+  const updateNote = (id: string, option: 'Es' | 'Panas' | undefined, sweetness: 'Manis' | 'Tawar' | 'Sedikit Gula' | undefined, note: string) => {
     setCart(prev => prev.map(item => 
-      (item.id === id && item.option === option) ? { ...item, note } : item
+      (item.id === id && item.option === option && item.sweetness === sweetness) ? { ...item, note } : item
     ));
     setNoteModalItem(null);
   };
@@ -874,28 +1240,145 @@ export default function App() {
   const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   const sendToWhatsApp = () => {
-    const phoneNumber = "+6281258394293";
+    const phoneNumber = "6281258394293";
+    const orderId = Math.random().toString(36).substring(2, 6).toUpperCase();
+    
     const orderDetails = cart.map(item => {
-      let detail = `- ${item.name}${item.option ? ` (${item.option})` : ''} (${item.quantity}x)`;
-      if (item.note) detail += `%0A  *Catatan: ${item.note}*`;
+      let detail = `- ${item.name} (${item.quantity}x)`;
+      const details = [];
+      if (item.option) details.push(item.option);
+      if (item.sweetness) details.push(item.sweetness);
+      if (item.note) details.push(item.note);
+      if (details.length > 0) detail += ` [${details.join(', ')}]`;
       return detail;
-    }).join('%0A');
-    const message = `Halo RM Segar,%0A%0ASaya ingin memesan (${orderType}):%0A${orderDetails}%0A%0ATerima kasih!`;
+    }).join('\n');
+
+    const messageContent = `*RM SEGAR - PESANAN BARU #${orderId}*
+ 
+ Saya memesan berikut:
+ - Waktu: ${new Date().toLocaleString('id-ID')}
+ - Untuk: ${orderType === 'Makan di Tempat' ? `${scheduleHeadcount} orang` : 'Bungkus'}
+ 
+ *Daftar Menu:*
+ ${orderDetails}
+ 
+ - Jenis: ${orderType}
+ - Pembayaran: ${paymentMethod}
+ - Catatan: ${orderNote || '-'}
+ 
+ Mohon bantuannya untuk segera diproses. Terima kasih! 🎋`;
+
+    const message = encodeURIComponent(messageContent);
     
     // Save to history
     const newOrder: Order = {
-      id: Math.random().toString(36).substr(2, 9).toUpperCase(),
+      id: orderId,
       date: new Date().toLocaleString('id-ID'),
       items: [...cart],
       totalItems: totalItems,
-      orderType: orderType
+      orderType: orderType,
+      paymentMethod: paymentMethod,
+      note: orderNote || undefined
     };
     setOrders(prev => [newOrder, ...prev]);
     
-    window.open(`https://wa.me/${phoneNumber}?text=${message}`, '_blank');
+    const waUrl = `https://wa.me/${phoneNumber}?text=${message}`;
+    const link = document.createElement('a');
+    link.href = waUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
     setCart([]);
-    setOrderType('Makan di Tempat');
     setIsCartOpen(false);
+  };
+
+  const sendScheduleToWhatsApp = () => {
+    const phoneNumber = "6281258394293";
+    const scheduleId = Math.random().toString(36).substring(2, 6).toUpperCase();
+
+    const orderDetails = cart.length > 0 ? cart.map(item => {
+      let detail = `- ${item.name} (${item.quantity}x)`;
+      const details = [];
+      if (item.option) details.push(item.option);
+      if (item.sweetness) details.push(item.sweetness);
+      if (item.note) details.push(item.note);
+      if (details.length > 0) detail += ` [${details.join(', ')}]`;
+      return detail;
+    }).join('\n') : "_Hanya Reservasi Meja_";
+    
+    let scheduleInfo = '';
+    if (scheduleType === 'Jam') {
+      scheduleInfo = `nanti jam ${scheduleTime || '--:--'}`;
+    } else {
+      scheduleInfo = `hari/tanggal ${scheduleDate || 'Hari Ini'} jam ${scheduleTime || '--:--'}`;
+    }
+
+    const messageContent = `*RM SEGAR - RESERVASI & JADWAL #${scheduleId}*
+ 
+ Saya ingin memesan/reservasi untuk:
+ - Waktu: ${scheduleInfo}
+ - Untuk: ${scheduleHeadcount} orang
+ 
+ *Pesanan:*
+ ${orderDetails}
+ 
+ - Jenis: ${orderType === 'Makan di Tempat' ? 'Dine In' : 'Bungkus'}
+ - Pembayaran: ${paymentMethod}
+ - Catatan: ${scheduleNote || '-'}
+ 
+ Mohon konfirmasinya. Terima kasih! 🎋`;
+
+    const message = encodeURIComponent(messageContent);
+    
+    // Save to order history if has items
+    if (cart.length > 0) {
+      const newOrder: Order = {
+        id: scheduleId,
+        date: new Date().toLocaleString('id-ID'),
+        items: [...cart],
+        totalItems: totalItems,
+        orderType: orderType,
+        paymentMethod: paymentMethod,
+        note: scheduleNote || undefined,
+        schedule: {
+          type: scheduleType,
+          date: scheduleDate,
+          time: scheduleTime
+        }
+      };
+      setOrders(prev => [newOrder, ...prev]);
+    }
+
+    // Always save to reservations
+    const newRes: Reservation = {
+      id: scheduleId,
+      date: scheduleDate || "Hari Ini",
+      time: scheduleTime || "12:00",
+      attendees: scheduleHeadcount,
+      note: scheduleNote || (cart.length > 0 ? "Pesanan Terjadwal" : "Reservasi Meja"),
+      status: 'Akan Datang',
+      orderType: orderType === 'Makan di Tempat' ? 'Makan di Tempat' : 'Bungkus',
+      items: cart.length > 0 ? [...cart] : undefined
+    };
+    setReservations(prev => [newRes, ...prev]);
+    
+    const waUrl = `https://wa.me/${phoneNumber}?text=${message}`;
+    const link = document.createElement('a');
+    link.href = waUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setCart([]);
+    setIsCartOpen(false);
+    setIsScheduling(false);
+    setShowSuccess(true);
+    setTimeout(() => setShowSuccess(false), 3000);
   };
 
   const renderHome = () => (
@@ -919,13 +1402,18 @@ export default function App() {
               </div>
             </div>
             
-            <button 
+            <div 
               onClick={startAIChat}
-              className="w-full py-3 bg-orange-500 text-white rounded-2xl font-bold text-sm flex items-center justify-center gap-2 hover:bg-orange-600 transition-all"
+              className="w-full bg-white/10 backdrop-blur-md rounded-2xl p-4 flex items-center gap-3 border border-white/10 cursor-pointer hover:bg-white/20 transition-all border-dashed"
             >
-              <MessageSquare size={18} />
-              Mulai Chat Rekomendasi
-            </button>
+              <div className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white">
+                <Utensils size={16} />
+              </div>
+              <span className="text-white/60 text-sm font-medium">Tanya Master Panda apa saja...</span>
+              <div className="ml-auto w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-white/40">
+                <ArrowRight size={16} />
+              </div>
+            </div>
           </div>
           
           {/* Decorative background elements */}
@@ -1184,6 +1672,593 @@ export default function App() {
     </motion.div>
   );
 
+  const renderGame = () => {
+    return (
+      <AnimatePresence>
+        {isGameOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[110] bg-stone-900 flex flex-col items-center justify-center p-6"
+          >
+            <div className="w-full max-w-md h-full flex flex-col gap-6">
+              <div className="flex justify-between items-center text-white">
+                <div>
+                  <h2 className="text-xl font-black italic tracking-tighter">PANDA NOODLE</h2>
+                  <p className="text-[10px] font-bold text-orange-500 uppercase tracking-widest">Catch the Goodies! 🍜</p>
+                </div>
+                <button 
+                  onClick={() => setIsGameOpen(false)}
+                  className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center text-white hover:bg-white/20 transition-colors"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              {/* Game Area */}
+              <div className="flex-grow bg-white rounded-[40px] relative overflow-hidden shadow-2xl border-4 border-white/10">
+                <PandaNoodleGame onGameOver={(score) => {
+                  if (score > highScore) setHighScore(score);
+                }} />
+              </div>
+
+              <div className="flex justify-between items-center px-4 py-2">
+                <div className="text-center">
+                  <p className="text-[10px] text-stone-500 font-bold uppercase">High Score</p>
+                  <p className="text-xl font-black text-white">{highScore}</p>
+                </div>
+                <div className="w-px h-8 bg-stone-800" />
+                <div className="text-center">
+                  <p className="text-[10px] text-stone-500 font-bold uppercase">Tips</p>
+                  <p className="text-[10px] text-stone-400 font-medium">Geser panda untuk menangkap mie! 🥢</p>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    );
+  };
+
+  const handleCancelReservation = (id: string) => {
+    const res = reservations.find(r => r.id === id);
+    if (!res) return;
+    
+    const phoneNumber = "6281258394293";
+    const message = `Halo RM Segar,%0A%0ASaya ingin *MEMBATALKAN* reservasi berikut:%0A- ID: ${res.id}%0A- Waktu: ${res.date} jam ${res.time}%0A- Untuk: ${res.attendees} orang%0A%0AMohon konfirmasinya. Terima kasih.`;
+    
+    const waUrl = `https://wa.me/${phoneNumber}?text=${message}`;
+    const link = document.createElement('a');
+    link.href = waUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    setReservations(prev => prev.filter(r => r.id !== id));
+    setShowSuccess(true);
+    setTimeout(() => setShowSuccess(false), 3000);
+  };
+
+  const renderReservations = (isCompact = false) => {
+    const upcomingReservations = reservations.filter(r => r.status === 'Akan Datang');
+    
+    return (
+      <motion.div 
+        initial={{ opacity: 0 }} 
+        animate={{ opacity: 1 }} 
+        exit={{ opacity: 0 }}
+        className={`space-y-8 ${isCompact ? 'pb-10' : 'px-6 pb-32'}`}
+      >
+        {!isCompact && (
+          <div className="flex justify-between items-center">
+            <h2 className="text-2xl font-black text-stone-900 tracking-tight">Jadwal & Reservasi</h2>
+            <button 
+              onClick={() => setIsScheduling(true)}
+              className="w-12 h-12 bg-orange-500 text-white rounded-2xl flex items-center justify-center shadow-lg active:scale-95 transition-all"
+            >
+              <Plus size={24} />
+            </button>
+          </div>
+        )}
+
+        {/* Quick Stats */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-white p-5 rounded-[28px] border border-stone-50 shadow-sm">
+            <p className="text-[10px] font-black text-stone-400 uppercase tracking-widest mb-1">Akan Datang</p>
+            <p className="text-3xl font-black text-stone-900">{upcomingReservations.length}</p>
+          </div>
+          <div className="bg-orange-50 p-5 rounded-[28px] border border-orange-100 shadow-sm">
+            <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest mb-1">Total Jadwal</p>
+            <p className="text-3xl font-black text-orange-600">{reservations.length}</p>
+          </div>
+        </div>
+
+        {/* Reservation List */}
+        <div className="space-y-4">
+          <h3 className="text-sm font-black text-stone-400 uppercase tracking-wider px-2">Daftar Jadwal Anda</h3>
+          
+          {reservations.length === 0 ? (
+            <div className="py-16 bg-white rounded-[32px] border border-dashed border-stone-200 flex flex-col items-center justify-center text-center px-8">
+              <div className="w-20 h-20 bg-stone-50 rounded-full flex items-center justify-center text-stone-200 mb-6">
+                <Calendar size={40} />
+              </div>
+              <h3 className="text-lg font-bold text-stone-900 mb-2">Belum Ada Jadwal</h3>
+              <p className="text-sm text-stone-400 leading-relaxed">Pesan meja atau jadwalkan makanan favorit Anda untuk jam, hari, atau bulan tertentu.</p>
+              <button 
+                onClick={() => setIsScheduling(true)}
+                className="mt-8 px-8 py-3 bg-stone-900 text-white rounded-2xl font-bold text-sm"
+              >
+                Buat Jadwal Baru
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {reservations.map(res => (
+                <div key={res.id} className="relative overflow-hidden rounded-[32px] group">
+                  {/* Delete Action Background */}
+                  <div className="absolute inset-0 bg-red-500 flex items-center justify-end px-8">
+                    <button 
+                      onClick={() => handleCancelReservation(res.id)}
+                      className="flex flex-col items-center gap-1 text-white animate-pulse"
+                    >
+                      <Trash2 size={24} />
+                      <span className="text-[10px] font-black uppercase">Hapus</span>
+                    </button>
+                  </div>
+
+                  {/* Swipeable Card */}
+                  <motion.div 
+                    drag="x"
+                    dragConstraints={{ left: -100, right: 0 }}
+                    dragElastic={0.1}
+                    onDragEnd={(_, info) => {
+                      if (info.offset.x < -80) {
+                        // Optional: trigger delete immediately or just leave it open
+                      }
+                    }}
+                    className="bg-white p-5 rounded-[32px] border border-stone-50 shadow-sm flex items-center gap-4 relative z-10 cursor-grab active:cursor-grabbing"
+                  >
+                    <div className="w-14 h-14 bg-orange-100 text-orange-600 rounded-[20px] flex items-center justify-center flex-shrink-0">
+                      <Clock size={28} />
+                    </div>
+                    <div className="flex-grow">
+                      <div className="flex justify-between items-start">
+                        <h4 className="font-bold text-stone-900">{res.orderType || 'Makan di Tempat'}</h4>
+                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tighter ${
+                          res.status === 'Akan Datang' ? 'bg-green-100 text-green-600' : 'bg-stone-100 text-stone-400'
+                        }`}>
+                          {res.status}
+                        </span>
+                      </div>
+                      <p className="text-xs text-stone-500 mt-0.5">{res.date} • {res.time}</p>
+                      <div className="flex items-center gap-3 mt-2">
+                         <div className="flex items-center gap-1 text-[10px] text-stone-400 font-bold">
+                           <User size={12} />
+                           {res.attendees} Orang
+                         </div>
+                         {res.items && res.items.length > 0 && (
+                            <div className="flex items-center gap-1 text-[10px] text-blue-500 font-bold">
+                              <ShoppingBag size={12} />
+                              {res.items.length} Menu
+                            </div>
+                         )}
+                         {res.note && (
+                           <div className="flex flex-col gap-1 mt-2">
+                             <div className="flex items-center gap-1 text-[10px] text-orange-500 font-bold italic">
+                               <MessageSquare size={12} />
+                               {res.note.length > 20 ? 'Ada Catatan' : res.note}
+                             </div>
+                             {res.note.length > 20 && (
+                               <p className="text-[9px] text-stone-400 italic line-clamp-1 ml-4">"{res.note}"</p>
+                             )}
+                           </div>
+                         )}
+                      </div>
+                      {res.items && res.items.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-stone-50 flex flex-wrap gap-1.5">
+                          {res.items.map((item, idx) => (
+                            <span key={idx} className={`px-2 py-0.5 rounded-md text-[9px] font-bold flex items-center gap-1 ${
+                              item.option ? (item.option === 'Es' ? 'bg-blue-50 text-blue-500' : 'bg-orange-50 text-orange-600') : 'bg-stone-50 text-stone-500'
+                            }`}>
+                              {item.name} x{item.quantity}
+                              {item.option && <span className="opacity-60">• {item.option}</span>}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Master Panda Help Overlay */}
+        <div className="bg-stone-900 p-6 rounded-[32px] shadow-xl relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl group-hover:scale-150 transition-transform duration-700" />
+          <div className="relative z-10 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center">
+                <Bot className="text-stone-900" size={24} />
+              </div>
+              <div>
+                <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Tanya Master Panda</p>
+                <h4 className="text-sm font-bold text-white">Butuh Bantuan Reservasi?</h4>
+              </div>
+            </div>
+            <p className="text-xs text-white/60 leading-relaxed">
+              "Halo! Master Panda siap bantu kamu menjadwalkan makan malam romantis atau kumpul keluarga besar. Tanya saja ke saya!"
+            </p>
+            <button 
+              onClick={() => {
+                handleSendMessage(undefined, "Bantu saya booking");
+                startAIChat();
+              }}
+              className="w-full py-3 bg-white/10 hover:bg-white text-white hover:text-stone-900 rounded-xl text-xs font-bold transition-all border border-white/5"
+            >
+              Hubungi Master Panda
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    );
+  };
+
+  const renderSchedulingModal = () => (
+    <AnimatePresence>
+      {isScheduling && (
+        <>
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsScheduling(false)}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[120]"
+          />
+          <motion.div 
+            initial={{ y: '100%' }}
+            animate={{ y: 0 }}
+            exit={{ y: '100%' }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[90vh] bg-white rounded-t-[48px] shadow-2xl z-[120] flex flex-col"
+          >
+            <div className="w-12 h-1.5 bg-stone-200 rounded-full mx-auto mt-4 mb-6" />
+            
+            <div className="px-8 flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-black text-stone-900 tracking-tight">Buat Jadwal</h2>
+                <p className="text-[10px] font-bold text-stone-400 uppercase tracking-widest">Pesanan & Reservasi</p>
+              </div>
+              <button 
+                onClick={() => setIsScheduling(false)}
+                className="w-10 h-10 bg-stone-50 rounded-xl flex items-center justify-center text-stone-400"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="flex-grow overflow-y-auto px-8 space-y-6 no-scrollbar pb-10">
+              {/* Choice Section */}
+              <div className="bg-stone-900 rounded-[32px] p-6 text-white shadow-xl shadow-stone-200">
+                <div className="flex items-center gap-4 mb-4">
+                  <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center">
+                    <Bot className="text-white" size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black uppercase tracking-widest">Pilih Cara</h3>
+                    <p className="text-[10px] text-white/60">Tanya AI atau Isi Sendiri</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <button 
+                    onClick={() => {
+                      handleSendMessage(undefined, "Bantu saya buat reservasi!");
+                      startAIChat();
+                      setIsScheduling(false);
+                    }}
+                    className="py-3 bg-white text-stone-900 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
+                  >
+                    <Sparkles size={14} />
+                    Tanya AI
+                  </button>
+                  <button 
+                    className="py-3 bg-white/20 text-white rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 border border-white/20 active:bg-white active:text-stone-900 transition-all font-sans"
+                    onClick={() => {}} // Already on this page
+                  >
+                    <Edit3 size={14} />
+                    Isi Sendiri
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-4 pt-2">
+                <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Jenis Pesanan</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <button 
+                    onClick={() => setOrderType('Makan di Tempat')}
+                    className={`py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${
+                      orderType === 'Makan di Tempat' ? 'bg-stone-900 border-stone-900 text-white' : 'bg-stone-50 border-stone-50 text-stone-400'
+                    }`}
+                  >
+                    Dine In
+                  </button>
+                  <button 
+                    onClick={() => setOrderType('Bungkus')}
+                    className={`py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest border-2 transition-all ${
+                      orderType === 'Bungkus' ? 'bg-orange-500 border-orange-500 text-white' : 'bg-stone-50 border-stone-50 text-stone-400'
+                    }`}
+                  >
+                    Bungkus
+                  </button>
+                </div>
+              </div>
+
+              {/* Type Selection */}
+              <div className="space-y-4">
+                <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Jenis Penjadwalan</p>
+                <div className="grid grid-cols-2 gap-2 bg-stone-50 p-1.5 rounded-[24px]">
+                  {['Jam', 'Hari'].map((type) => (
+                    <button 
+                      key={type}
+                      onClick={() => setScheduleType(type as any)}
+                      className={`py-3 rounded-2xl text-xs font-black transition-all ${
+                        scheduleType === type ? 'bg-stone-900 text-white shadow-lg' : 'text-stone-400 hover:text-stone-600'
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Dynamic Form based on Type */}
+              <div className="space-y-6">
+                {scheduleType === 'Jam' && (
+                  <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <label className="block">
+                      <span className="text-xs font-black text-stone-400 uppercase tracking-widest px-2 mb-2 block">Pilih Jam (Hari Ini)</span>
+                      <input 
+                        type="time" 
+                        value={scheduleTime}
+                        onChange={(e) => setScheduleTime(e.target.value)}
+                        className="w-full bg-stone-50 border-none rounded-2xl px-6 py-4 text-stone-900 font-bold focus:ring-2 focus:ring-orange-500/20"
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {scheduleType === 'Hari' && (
+                  <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <label className="block">
+                      <span className="text-xs font-black text-stone-400 uppercase tracking-widest px-2 mb-2 block">Pilih Tanggal</span>
+                      <input 
+                        type="date" 
+                        value={scheduleDate}
+                        onChange={(e) => setScheduleDate(e.target.value)}
+                        className="w-full bg-stone-50 border-none rounded-2xl px-6 py-4 text-stone-900 font-bold focus:ring-2 focus:ring-orange-500/20"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-black text-stone-400 uppercase tracking-widest px-2 mb-2 block">Pilih Waktu</span>
+                      <input 
+                        type="time" 
+                        value={scheduleTime}
+                        onChange={(e) => setScheduleTime(e.target.value)}
+                        className="w-full bg-stone-50 border-none rounded-2xl px-6 py-4 text-stone-900 font-bold focus:ring-2 focus:ring-orange-500/20"
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-4">
+                <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Detail Reservasi</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-stone-50 p-4 rounded-[28px]">
+                    <p className="text-[10px] font-black text-stone-400 uppercase mb-2">Jumlah Orang</p>
+                    <div className="flex items-center justify-between">
+                       <button 
+                         onClick={() => setScheduleHeadcount(Math.max(1, scheduleHeadcount - 1))}
+                         className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm text-stone-900"
+                       >
+                         <Minus size={14} />
+                       </button>
+                       <span className="text-xl font-black text-stone-900">{scheduleHeadcount}</span>
+                       <button 
+                         onClick={() => setScheduleHeadcount(scheduleHeadcount + 1)}
+                         className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm text-stone-900"
+                       >
+                         <Plus size={14} />
+                       </button>
+                    </div>
+                  </div>
+                  <div className={`bg-stone-50 p-4 rounded-[28px] border-2 transition-all ${
+                    orderType === 'Makan di Tempat' ? 'border-stone-900/10' : 'border-orange-500/20'
+                  }`}>
+                    <p className="text-[10px] font-black text-stone-400 uppercase mb-2">Status</p>
+                    <div className="flex items-center gap-2 text-stone-900 font-bold">
+                      {orderType === 'Makan di Tempat' ? (
+                        <>
+                          <Utensils size={18} className="text-stone-900" />
+                          <span className="text-sm">Dine In</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShoppingBag size={18} className="text-orange-500" />
+                          <span className="text-sm">Bungkus</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+               <div className="space-y-4">
+                <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Catatan Tambahan</p>
+                <div className="bg-stone-50 p-6 rounded-[32px] border border-stone-100 flex items-start gap-4">
+                  <div className="w-10 h-10 bg-white rounded-2xl flex items-center justify-center text-stone-400 shadow-sm flex-shrink-0">
+                    <MessageSquare size={20} />
+                  </div>
+                  <textarea 
+                    placeholder="Ada permintaan khusus? Misalnya: 'Meja deket jendela' atau 'Rayain ultah'..."
+                    value={scheduleNote}
+                    onChange={(e) => setScheduleNote(e.target.value)}
+                    className="w-full bg-transparent border-none p-0 text-sm text-stone-900 placeholder:text-stone-300 focus:ring-0 min-h-[80px] resize-none"
+                  />
+                </div>
+              </div>
+
+              {cart.length > 0 && (
+                <div className="space-y-4">
+                  <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Menu yang Dipesan</p>
+                  <div className="space-y-4">
+                    {cart.map((item) => (
+                      <div key={`${item.id}-${item.option || 'none'}`} className="relative overflow-hidden rounded-3xl group">
+                        {/* Swipe Background (Delete Button) */}
+                        <div className="absolute inset-0 bg-red-500 flex items-center justify-end">
+                          <button 
+                            onClick={() => clearItemFromCart(item.id, item.option)}
+                            className="h-full px-8 text-white active:bg-blue-600 transition-colors flex flex-col items-center justify-center gap-1 group/delete"
+                          >
+                            <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center group-active/delete:scale-90 transition-transform">
+                              <Trash2 size={24} />
+                            </div>
+                            <span className="text-[10px] font-black uppercase tracking-widest">Hapus</span>
+                          </button>
+                        </div>
+
+                        {/* Item Content */}
+                        <motion.div 
+                          drag="x"
+                          dragConstraints={{ left: -100, right: 0 }}
+                          dragElastic={0.05}
+                          className="relative bg-white flex gap-4 items-center p-4 cursor-grab active:cursor-grabbing border border-stone-100 rounded-[inherit] z-10"
+                        >
+                          <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0">
+                            <MenuIcon item={item} size={24} />
+                          </div>
+                          <div className="flex-grow">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <h4 className="font-bold text-stone-900 leading-tight text-sm">{item.name}</h4>
+                                <p className="text-[9px] text-stone-400 font-bold uppercase tracking-widest">{item.category}</p>
+                              </div>
+                              <button 
+                                onClick={() => setNoteModalItem({ id: item.id, option: item.option, note: item.note || '' })}
+                                className={`p-1.5 rounded-lg transition-colors ${item.note ? 'text-orange-500 bg-orange-50' : 'text-stone-300 hover:text-orange-500 hover:bg-orange-50'}`}
+                              >
+                                <MessageSquare size={14} />
+                              </button>
+                            </div>
+                            
+                            <div className="flex items-center justify-between mt-2">
+                              <div className="flex items-center gap-2.5 bg-white px-2 py-1 rounded-xl border border-stone-100 shadow-sm">
+                                <button 
+                                  onClick={() => removeFromCart(item.id, item.option)}
+                                  className="w-6 h-6 rounded-lg bg-stone-50 flex items-center justify-center text-stone-400 active:bg-stone-100 border border-stone-100"
+                                >
+                                  <Minus size={12} />
+                                </button>
+                                <span className="font-black text-stone-900 text-[11px]">{item.quantity}</span>
+                                <button 
+                                  onClick={() => addToCart(item, item.option)}
+                                  className="w-6 h-6 rounded-lg bg-orange-500 flex items-center justify-center text-white active:bg-orange-600"
+                                >
+                                  <Plus size={12} />
+                                </button>
+                              </div>
+                              {item.option && (
+                                <button 
+                                  onClick={() => toggleItemOption(item.id, item.option)}
+                                  className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-tighter transition-all active:scale-90 ${
+                                  item.option === 'Es' ? 'bg-blue-100 text-blue-600 hover:bg-blue-200' : 'bg-orange-100 text-orange-600 hover:bg-orange-200'
+                                }`}>
+                                  {item.option} 🔄
+                                </button>
+                              )}
+                            </div>
+
+                            {item.note && (
+                              <div className="mt-2 p-2 bg-orange-50/50 rounded-xl border border-orange-100/50 flex items-start gap-2">
+                                <MessageSquare size={10} className="text-orange-500 mt-0.5" />
+                                <p className="text-[9px] text-orange-600 font-medium italic line-clamp-1">"{item.note}"</p>
+                              </div>
+                            )}
+                          </div>
+                        </motion.div>
+                      </div>
+                    ))}
+                    <div className="p-4 bg-stone-900 rounded-3xl flex justify-between items-center shadow-lg shadow-stone-100">
+                      <span className="text-[10px] font-black text-white/40 uppercase tracking-widest">Total Pesanan</span>
+                      <span className="text-sm font-black text-white">{totalItems} Menu</span>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-3xl border-2 border-dashed border-stone-200 flex flex-col items-center gap-4">
+                      <p className="text-[10px] font-black text-stone-400 uppercase tracking-widest text-center">QR untuk Reorder / Share</p>
+                      <div className="p-3 bg-white rounded-2xl shadow-sm border border-stone-100">
+                        <QRCodeSVG 
+                          value={JSON.stringify({ 
+                            items: cart.map(i => ({ id: i.id, q: i.quantity, o: i.option })),
+                            type: 'rm_segar_order'
+                          })} 
+                          size={120}
+                        />
+                      </div>
+                      <p className="text-[9px] text-stone-400 text-center px-4 leading-normal">Pindai QR ini untuk menyalin keranjang belanja ke ponsel lain.</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Metode Pembayaran</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <button 
+                    onClick={() => setPaymentMethod('Tunai')}
+                    className={`py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest border-2 transition-all flex items-center justify-center gap-2 ${
+                      paymentMethod === 'Tunai' ? 'bg-stone-900 border-stone-900 text-white shadow-xl shadow-stone-100' : 'bg-stone-50 border-stone-50 text-stone-400'
+                    }`}
+                  >
+                    <span>💵</span>
+                    Tunai
+                  </button>
+                  <button 
+                    onClick={() => setPaymentMethod('Transfer')}
+                    className={`py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest border-2 transition-all flex items-center justify-center gap-2 ${
+                      paymentMethod === 'Transfer' ? 'bg-orange-500 border-orange-500 text-white shadow-xl shadow-orange-100' : 'bg-stone-50 border-stone-50 text-stone-400'
+                    }`}
+                  >
+                    <span>🏦</span>
+                    Transfer
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-8 bg-white border-t border-stone-100 flex gap-4">
+              <button 
+                onClick={() => setIsScheduling(false)}
+                className="px-8 py-5 bg-stone-100 text-stone-900 rounded-[28px] font-black text-sm"
+              >
+                Batal
+              </button>
+              <button 
+                onClick={sendScheduleToWhatsApp}
+                className="flex-grow py-5 bg-orange-500 text-white rounded-[28px] font-black text-lg flex items-center justify-center gap-3 shadow-xl shadow-orange-100 active:scale-95 transition-all"
+              >
+                Buat Jadwal
+                <Check size={20} />
+              </button>
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  );
   const renderProfile = () => (
     <motion.div 
       initial={{ opacity: 0 }} 
@@ -1226,6 +2301,9 @@ export default function App() {
                       <span className="px-3 py-1 bg-stone-100 text-stone-600 text-[10px] font-bold uppercase rounded-full">
                         {order.orderType}
                       </span>
+                      <span className="px-3 py-1 bg-orange-100 text-orange-600 text-[10px] font-bold uppercase rounded-full">
+                        {order.paymentMethod}
+                      </span>
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -1246,20 +2324,63 @@ export default function App() {
                         </div>
                         {item.note && (
                           <div className="pl-4 border-l-2 border-orange-100 mb-2">
-                            <p className="text-[10px] text-orange-500 italic">Catatan: {item.note}</p>
+                            <p className="text-[10px] text-orange-500 italic">Catatan Item: {item.note}</p>
                           </div>
                         )}
                       </React.Fragment>
                     ))}
+                    {order.note && (
+                      <div className="mt-4 p-3 bg-stone-50 rounded-2xl border border-stone-100">
+                        <p className="text-[10px] font-black text-stone-400 uppercase tracking-widest mb-1">Catatan Pesanan</p>
+                        <p className="text-xs text-stone-600 italic">"{order.note}"</p>
+                      </div>
+                    )}
                   </div>
                   <div className="pt-3 border-t border-stone-50 flex justify-between items-center">
                     <span className="text-xs font-bold text-stone-400 uppercase">Total Item</span>
                     <span className="text-stone-900 font-bold">{order.totalItems} Menu</span>
                   </div>
+                  
+                  <div className="pt-4 border-t border-dashed border-stone-100 flex flex-col items-center gap-3">
+                    <p className="text-[9px] font-black text-stone-300 uppercase tracking-widest">Scan QR untuk Reorder</p>
+                    <div className="p-2 bg-stone-50/50 rounded-xl">
+                      <QRCodeSVG 
+                        value={JSON.stringify({ 
+                          items: order.items.map(i => ({ id: i.id, q: i.quantity, o: i.option })),
+                          type: 'rm_segar_order',
+                          id: order.id
+                        })} 
+                        size={80}
+                      />
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
           )}
+        </div>
+      ) : showReservations ? (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <button 
+                onClick={() => setShowReservations(false)}
+                className="w-10 h-10 bg-white rounded-xl shadow-sm border border-stone-50 flex items-center justify-center text-stone-400"
+              >
+                <ChevronLeft size={24} />
+              </button>
+              <h2 className="text-xl font-bold text-stone-900">Jadwal & Reservasi</h2>
+            </div>
+            <button 
+              onClick={() => setIsScheduling(true)}
+              className="w-10 h-10 bg-orange-500 text-white rounded-xl flex items-center justify-center shadow-lg shadow-orange-100 active:scale-95 transition-all"
+            >
+              <Plus size={20} />
+            </button>
+          </div>
+          <div className="bg-stone-50/50 p-2 rounded-[32px] overflow-hidden">
+            {renderReservations(true)}
+          </div>
         </div>
       ) : showAbout ? (
         <div className="space-y-6">
@@ -1346,16 +2467,36 @@ export default function App() {
       ) : (
         <>
           <div className="flex flex-col items-center text-center space-y-4" id="tour-profile-info">
-            <div className="w-24 h-24 rounded-3xl bg-orange-500 shadow-xl shadow-orange-200 flex items-center justify-center text-white">
-              <MainLogo size={48} />
+            <div className="w-24 h-24 rounded-3xl bg-orange-500 shadow-xl shadow-orange-200 flex items-center justify-center text-white overflow-hidden">
+              {user?.photoURL ? (
+                <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                <MainLogo size={48} />
+              )}
             </div>
             <div>
-              <h2 className="text-2xl font-bold text-stone-900">{user ? 'RM Segar' : 'Tamu'}</h2>
+              <h2 className="text-2xl font-bold text-stone-900">{user ? (user.displayName || 'Pecinta Bakmie') : 'Tamu'}</h2>
               <p className="text-stone-500 font-bold">{user ? user.phone : 'Belum Masuk'}</p>
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <button 
+              onClick={() => setIsGameOpen(true)}
+              className="w-full flex items-center justify-between p-4 bg-orange-500 text-white rounded-2xl shadow-lg shadow-orange-200"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                  <Bot size={20} />
+                </div>
+                <div className="text-left">
+                  <span className="font-bold block">Main Game Yuk! 🎮</span>
+                  <p className="text-[10px] opacity-80 font-bold uppercase tracking-wider">Sembari nunggu pesanan...</p>
+                </div>
+              </div>
+              <ChevronRight size={20} />
+            </button>
+
             <button 
               onClick={() => setShowOrderHistory(true)}
               className="w-full flex items-center justify-between p-4 bg-white rounded-2xl shadow-sm border border-stone-50"
@@ -1370,6 +2511,30 @@ export default function App() {
               <ChevronRight size={20} className="text-stone-300" />
             </button>
             <button 
+              onClick={() => setShowReservations(true)}
+              className="w-full flex items-center justify-between p-4 bg-white rounded-2xl shadow-sm border border-stone-50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-xl flex items-center justify-center">
+                  <Calendar size={20} />
+                </div>
+                <span className="font-bold text-stone-700">Jadwal & Reservasi</span>
+              </div>
+              <ChevronRight size={20} className="text-stone-300" />
+            </button>
+            <button 
+              onClick={() => setShowTutorial(true)}
+              className="w-full flex items-center justify-between p-4 bg-white rounded-2xl shadow-sm border border-stone-50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-10 h-10 bg-blue-50 text-blue-500 rounded-xl flex items-center justify-center">
+                  <HelpCircle size={20} />
+                </div>
+                <span className="font-bold text-stone-700">Panduan Penggunaan</span>
+              </div>
+              <ChevronRight size={20} className="text-stone-300" />
+            </button>
+            <button 
               onClick={() => setShowAbout(true)}
               className="w-full flex items-center justify-between p-4 bg-white rounded-2xl shadow-sm border border-stone-50"
               id="tour-about-button"
@@ -1379,25 +2544,6 @@ export default function App() {
                   <MapPin size={20} />
                 </div>
                 <span className="font-bold text-stone-700">Tentang RM Segar</span>
-              </div>
-              <ChevronRight size={20} className="text-stone-300" />
-            </button>
-            <button 
-              onClick={() => {
-                setCompletedTours({});
-                localStorage.removeItem('rm_segar_completed_tours');
-                handleTabChange('home');
-                setActiveTour('home');
-                setTourStep(0);
-              }}
-              className="w-full flex items-center justify-between p-4 bg-white rounded-2xl shadow-sm border border-stone-50"
-              id="tour-guide-button"
-            >
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 bg-orange-50 text-orange-500 rounded-xl flex items-center justify-center">
-                  <Sparkles size={20} />
-                </div>
-                <span className="font-bold text-stone-700">Panduan Penggunaan</span>
               </div>
               <ChevronRight size={20} className="text-stone-300" />
             </button>
@@ -1435,6 +2581,25 @@ export default function App() {
                   </div>
 
                   <div className="space-y-4">
+                    <button 
+                      onClick={handleGoogleLogin}
+                      className="w-full flex items-center justify-center gap-3 py-4 bg-white border border-stone-100 rounded-2xl shadow-sm hover:bg-stone-50 transition-all active:scale-95 text-stone-700 font-bold"
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24">
+                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                      </svg>
+                      Masuk dengan Google
+                    </button>
+
+                    <div className="relative flex items-center py-2">
+                        <div className="flex-grow border-t border-stone-100"></div>
+                        <span className="flex-shrink mx-4 text-[10px] font-black text-stone-300 uppercase tracking-widest">Atau via WA</span>
+                        <div className="flex-grow border-t border-stone-100"></div>
+                    </div>
+
                     {loginMode !== 'verify' && (
                       <div className="space-y-2">
                         <label className="text-xs font-bold text-stone-400 uppercase ml-1">Nomor WhatsApp</label>
@@ -1526,36 +2691,106 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F8F9FB] pb-32 overflow-x-hidden relative flex flex-col items-center">
       <div className="w-full max-w-5xl">
-        {isLoading ? (
-          <div className="fixed inset-0 z-[100] bg-white flex flex-col items-center justify-center">
-            <div className="w-32 h-32 bg-orange-500 rounded-[40px] flex items-center justify-center text-white mb-4">
-              <MainLogo size={64} />
-            </div>
-            <div className="text-orange-500 font-bold animate-pulse">Memuat RM Segar...</div>
-          </div>
-        ) : (
-          <>
-            {/* Success Message Overlay */}
-            <AnimatePresence>
-              {showSuccess && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -20 }}
-                  className="fixed top-24 left-1/2 -translate-x-1/2 z-[60] bg-green-500 text-white px-6 py-3 rounded-2xl shadow-xl flex items-center gap-3 font-bold"
-                >
-                  <div className="w-6 h-6 bg-white/20 rounded-full flex items-center justify-center">
-                    <Check size={14} />
-                  </div>
-                  Berhasil diperbarui!
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            <div 
-              className="absolute top-0 left-0 right-0 flex justify-center pointer-events-none z-0"
-              style={{ height: 300 }}
+        <AnimatePresence>
+          {isLoading && (
+          <motion.div 
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.5 }}
+            className="fixed inset-0 z-[100] bg-white flex flex-col items-center justify-center"
+          >
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ 
+                duration: 0.8,
+                ease: "easeOut"
+              }}
+              className="relative mb-8"
             >
+              {/* Animated Logo Container */}
+              <motion.div 
+                animate={{ 
+                  y: [0, -15, 0],
+                }}
+                transition={{ 
+                  repeat: Infinity, 
+                  duration: 2,
+                  ease: "easeInOut"
+                }}
+                className="w-32 h-32 bg-orange-500 rounded-[40px] shadow-2xl shadow-orange-200 flex items-center justify-center text-white relative overflow-hidden"
+              >
+                <MainLogo size={64} />
+                
+                {/* Shine effect */}
+                <motion.div 
+                  animate={{ 
+                    x: [-150, 150]
+                  }}
+                  transition={{ 
+                    repeat: Infinity, 
+                    duration: 1.5,
+                    repeatDelay: 0.5
+                  }}
+                  className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent skew-x-12"
+                />
+              </motion.div>
+
+              {/* Decorative particles */}
+              {[...Array(6)].map((_, i) => (
+                <motion.div
+                  key={i}
+                  animate={{ 
+                    scale: [0, 1, 0],
+                    x: [0, (i % 2 === 0 ? 40 : -40) * Math.random()],
+                    y: [0, (i < 3 ? 40 : -40) * Math.random()],
+                  }}
+                  transition={{ 
+                    repeat: Infinity, 
+                    duration: 2,
+                    delay: i * 0.2
+                  }}
+                  className="absolute top-1/2 left-1/2 w-2 h-2 bg-orange-300 rounded-full"
+                />
+              ))}
+            </motion.div>
+
+            <motion.div
+              initial={{ y: 20, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: 0.5, duration: 0.8 }}
+              className="text-center"
+            >
+              <h1 className="text-3xl font-black text-stone-900 tracking-tighter mb-2">
+                RUMAH MAKAN <span className="text-orange-500">SEGAR</span>
+              </h1>
+              <div className="flex items-center justify-center gap-2">
+                <div className="w-8 h-1 bg-orange-500 rounded-full" />
+                <p className="text-[10px] text-stone-400 font-black uppercase tracking-[0.3em]">
+                  Otentik Kalimantan Barat
+                </p>
+                <div className="w-8 h-1 bg-orange-500 rounded-full" />
+              </div>
+            </motion.div>
+
+            {/* Loading Bar */}
+            <div className="absolute bottom-12 left-12 right-12 h-1.5 bg-stone-100 rounded-full overflow-hidden">
+              <motion.div 
+                initial={{ x: "-100%" }}
+                animate={{ x: "0%" }}
+                transition={{ duration: 2, ease: "easeInOut" }}
+                className="h-full bg-orange-500"
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Pull to Refresh Panda Animation */}
+      <div 
+        className="absolute top-0 left-0 right-0 flex justify-center pointer-events-none z-0"
+        style={{ height: 300 }}
+      >
         <AnimatePresence>
           {(pullY > 20 || isRefreshing || showSuccess) && (
             <motion.div 
@@ -1675,21 +2910,29 @@ export default function App() {
         </div>
 
         {/* Search Bar */}
-        <div className="relative" id="tour-search-bar">
-          <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-            <Search size={20} className="text-stone-400" />
+        <div className="flex gap-3 items-center" id="tour-search-bar">
+          <div className="relative flex-1">
+            <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+              <Search size={20} className="text-stone-400" />
+            </div>
+            <input 
+              type="text" 
+              placeholder="Cari menu favoritmu..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                if (activeTab !== 'search') setActiveTab('search');
+              }}
+              onFocus={() => setActiveTab('search')}
+              className="w-full bg-white border-none rounded-2xl py-4 pl-12 pr-4 shadow-sm focus:ring-2 focus:ring-orange-500/20 transition-all text-stone-900 placeholder:text-stone-400"
+            />
           </div>
-          <input 
-            type="text" 
-            placeholder="Cari menu favoritmu..."
-            value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              if (activeTab !== 'search') setActiveTab('search');
-            }}
-            onFocus={() => setActiveTab('search')}
-            className="w-full bg-white border-none rounded-2xl py-4 pl-12 pr-4 shadow-sm focus:ring-2 focus:ring-orange-500/20 transition-all text-stone-900 placeholder:text-stone-400"
-          />
+          <button 
+            onClick={() => setShowScanner(true)}
+            className="w-14 h-14 bg-white rounded-2xl shadow-sm border border-stone-100 flex items-center justify-center text-stone-900 active:scale-95 transition-transform"
+          >
+            <QrCode size={24} />
+          </button>
         </div>
       </header>
 
@@ -1711,7 +2954,7 @@ export default function App() {
             className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'home' ? 'text-orange-500' : 'text-stone-400'}`}
           >
             <Home size={24} />
-            <span className="text-[10px] font-bold">Beranda</span>
+            <span className="text-[10px] font-bold">Menu</span>
           </button>
           <button 
             onClick={() => handleTabChange('search')}
@@ -1764,21 +3007,21 @@ export default function App() {
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[85vh] bg-white rounded-t-[40px] shadow-2xl z-50 flex flex-col"
+              className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[90vh] bg-white rounded-t-[40px] shadow-2xl z-50 flex flex-col"
             >
-              <div className="w-12 h-1.5 bg-stone-200 rounded-full mx-auto mt-4 mb-6" />
+              <div className="w-12 h-1.5 bg-stone-200 rounded-full mx-auto mt-4 mb-6 flex-shrink-0" />
               
-              <div className="px-8 flex items-center justify-between mb-8">
-                <h2 className="text-2xl font-bold text-stone-900">Pesanan Anda</h2>
+              <div className="px-8 flex items-center justify-between mb-4 flex-shrink-0">
+                <h2 className="text-2xl font-black text-stone-900 tracking-tight">Pesanan Anda</h2>
                 <button 
                   onClick={() => setIsCartOpen(false)}
-                  className="w-10 h-10 bg-stone-100 rounded-full flex items-center justify-center text-stone-500"
+                  className="w-10 h-10 bg-stone-50 rounded-xl flex items-center justify-center text-stone-400 active:bg-stone-100"
                 >
                   <X size={20} />
                 </button>
               </div>
 
-              <div className="flex-grow overflow-y-auto px-8 space-y-6">
+              <div className="flex-grow overflow-y-auto px-8 space-y-8 no-scrollbar pb-10">
                 {cart.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center py-20">
                     <div className="w-24 h-24 bg-stone-50 rounded-full flex items-center justify-center mb-6 text-stone-300">
@@ -1788,134 +3031,205 @@ export default function App() {
                     <p className="text-stone-400">Pilih menu lezat kami untuk memulai pesanan.</p>
                   </div>
                 ) : (
-                  cart.map((item) => (
-                    <div key={`${item.id}-${item.option || 'none'}`} className="relative overflow-hidden rounded-3xl group">
-                      {/* Swipe Background (Delete Button) */}
+                  <>
+                      <div className="space-y-4">
+                        {cart.map((item) => (
+                          <div key={`${item.id}-${item.option || 'none'}-${item.sweetness || 'none'}`} className="relative overflow-hidden rounded-3xl group">
+                            {/* Swipe Background (Delete Button) */}
+                            <div className="absolute inset-0 bg-red-500 flex items-center justify-end">
+                              <button 
+                                onClick={() => clearItemFromCart(item.id, item.option, item.sweetness)}
+                                className="h-full px-8 text-white active:bg-blue-600 transition-colors flex flex-col items-center justify-center gap-1 group/delete-main"
+                              >
+                                <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center group-active/delete-main:scale-90 transition-transform">
+                                  <Trash2 size={24} />
+                                </div>
+                                <span className="text-[10px] font-black uppercase tracking-widest">Hapus</span>
+                              </button>
+                            </div>
+
+                            {/* Item Content */}
+                            <motion.div 
+                              drag="x"
+                              dragConstraints={{ left: -100, right: 0 }}
+                              dragElastic={0.05}
+                              className="relative bg-white flex gap-4 items-center p-4 cursor-grab active:cursor-grabbing border border-stone-100 rounded-[inherit]"
+                            >
+                              <div className="w-20 h-20 bg-stone-50 rounded-2xl flex items-center justify-center text-3xl shadow-sm overflow-hidden flex-shrink-0">
+                                <MenuIcon item={item} size={32} />
+                              </div>
+                              <div className="flex-grow">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <h4 className="font-bold text-stone-900 leading-tight">{item.name}</h4>
+                                    <div className="flex flex-wrap gap-1 mt-1">
+                                      <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest">{item.category}</p>
+                                      {item.sweetness && (
+                                        <>
+                                          <span className="text-[10px] text-stone-300">•</span>
+                                          <p className="text-[10px] text-orange-500 font-bold uppercase tracking-widest">{item.sweetness}</p>
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <button 
+                                    onClick={() => setNoteModalItem({ id: item.id, option: item.option, sweetness: item.sweetness, note: item.note || '' })}
+                                    className={`p-2 rounded-xl transition-colors ${item.note ? 'text-orange-500 bg-orange-50' : 'text-stone-300 hover:text-orange-500 hover:bg-orange-50'}`}
+                                  >
+                                    <MessageSquare size={16} />
+                                  </button>
+                                </div>
+                                
+                                <div className="flex items-center justify-between mt-3">
+                                  <div className="flex items-center gap-3 bg-stone-50 px-2 py-1.5 rounded-xl border border-stone-100 shadow-sm">
+                                    <button 
+                                      onClick={() => removeFromCart(item.id, item.option, item.sweetness)}
+                                      className="w-7 h-7 rounded-lg bg-white flex items-center justify-center text-stone-400 active:bg-stone-100 border border-stone-100"
+                                    >
+                                      <Minus size={14} />
+                                    </button>
+                                    <span className="font-black text-stone-900 text-xs">{item.quantity}</span>
+                                    <button 
+                                      onClick={() => addToCart(item, item.option, item.sweetness)}
+                                      className="w-7 h-7 rounded-lg bg-orange-500 flex items-center justify-center text-white active:bg-orange-600"
+                                    >
+                                      <Plus size={14} />
+                                    </button>
+                                  </div>
+
+                                  {item.option && (
+                                    <button 
+                                      onClick={() => toggleItemOption(item.id, item.option, item.sweetness)}
+                                      className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter transition-all active:scale-95 ${
+                                      item.option === 'Es' ? 'bg-blue-100 text-blue-600 hover:bg-blue-200' : 'bg-orange-100 text-orange-600 hover:bg-orange-200'
+                                    }`}>
+                                      {item.option} 🔄
+                                    </button>
+                                  )}
+                                </div>
+
+                                {item.note && (
+                                  <div className="mt-3 p-2 bg-orange-50 rounded-xl border border-orange-100 flex items-start gap-2">
+                                    <MessageSquare size={12} className="text-orange-500 mt-0.5" />
+                                    <p className="text-[10px] text-orange-600 font-medium italic">"{item.note}"</p>
+                                  </div>
+                                )}
+                              </div>
+                            </motion.div>
+                          </div>
+                        ))}
+                      </div>
+
+                    <div className="space-y-4 px-2 border-t border-stone-100 pt-8">
+                      <div className="flex justify-between items-center text-stone-500">
+                        <span className="text-xs font-bold uppercase tracking-widest text-stone-400">Rincian Pesanan</span>
+                        <span className="font-black text-stone-900">{totalItems} Menu</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Metode Makan</p>
+                      <div className="grid grid-cols-2 gap-3 p-1.5 bg-stone-50 rounded-[24px]">
+                        <button 
+                          onClick={() => setOrderType('Makan di Tempat')}
+                          className={`py-4 rounded-[20px] text-[10px] font-black uppercase tracking-widest transition-all ${
+                            orderType === 'Makan di Tempat' ? 'bg-stone-900 text-white shadow-lg' : 'text-stone-400'
+                          }`}
+                        >
+                          Dine In
+                        </button>
+                        <button 
+                          onClick={() => setOrderType('Bungkus')}
+                          className={`py-4 rounded-[20px] text-[10px] font-black uppercase tracking-widest transition-all ${
+                            orderType === 'Bungkus' ? 'bg-orange-500 text-white shadow-lg' : 'text-stone-400'
+                          }`}
+                        >
+                          Bungkus
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Metode Pembayaran</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <button 
+                          onClick={() => setPaymentMethod('Tunai')}
+                          className={`py-4 px-4 rounded-[24px] text-[10px] font-black uppercase tracking-widest border-2 transition-all flex flex-col items-center justify-center gap-2 ${
+                            paymentMethod === 'Tunai' ? 'bg-stone-900 border-stone-900 text-white shadow-xl shadow-stone-100' : 'bg-white border-stone-100 text-stone-400'
+                          }`}
+                        >
+                          <Banknote size={24} />
+                          Tunai
+                        </button>
+                        <button 
+                          onClick={() => setPaymentMethod('Transfer')}
+                          className={`py-4 px-4 rounded-[24px] text-[10px] font-black uppercase tracking-widest border-2 transition-all flex flex-col items-center justify-center gap-2 ${
+                            paymentMethod === 'Transfer' ? 'bg-orange-500 border-orange-500 text-white shadow-xl shadow-orange-100' : 'bg-white border-stone-100 text-stone-400'
+                          }`}
+                        >
+                          <CreditCard size={24} />
+                          Transfer
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Catatan Tambahan</p>
+                      <div className="bg-stone-50 p-6 rounded-[32px] border border-stone-100 flex items-start gap-4">
+                        <div className="w-10 h-10 bg-white rounded-2xl flex items-center justify-center text-stone-400 shadow-sm flex-shrink-0">
+                          <MessageSquare size={20} />
+                        </div>
+                        <textarea 
+                          placeholder="Contoh: Meja di depan, rayain ultah, dll..."
+                          value={orderNote}
+                          onChange={(e) => setOrderNote(e.target.value)}
+                          className="w-full bg-transparent border-none p-0 text-sm text-stone-900 placeholder:text-stone-300 focus:ring-0 min-h-[80px] resize-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-4 space-y-4">
                       <button 
-                        onClick={() => clearItemFromCart(item.id, item.option)}
-                        className="absolute inset-0 bg-red-500 flex items-center justify-end px-8 text-white active:bg-red-600 transition-colors"
+                        onClick={sendToWhatsApp}
+                        className="group w-full bg-[#25D366] text-white py-6 rounded-[32px] font-black text-sm uppercase tracking-widest flex items-center justify-center gap-3 shadow-2xl shadow-green-200 active:scale-[0.97] transition-all"
                       >
-                        <div className="flex flex-col items-center gap-1">
-                          <Trash2 size={24} />
-                          <span className="text-[10px] font-bold uppercase">Hapus</span>
+                        <div className="flex flex-col items-center leading-none">
+                          <div className="flex items-center gap-2 mb-1">
+                            <MessageCircle size={20} fill="currentColor" className="text-white/40" />
+                            <span>Kirim ke WhatsApp</span>
+                          </div>
+                          <span className="text-[10px] uppercase font-bold tracking-widest opacity-60">Selesaikan Pembayaran</span>
                         </div>
                       </button>
 
-                      {/* Item Content */}
-                      <motion.div 
-                        drag="x"
-                        dragConstraints={{ left: -100, right: 0 }}
-                        dragElastic={0.1}
-                        className="relative bg-white flex gap-4 items-center p-2 cursor-grab active:cursor-grabbing"
+                      <div className="relative flex items-center justify-center py-2">
+                        <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                          <div className="w-full border-t border-stone-100/50"></div>
+                        </div>
+                        <div className="relative flex justify-center text-[8px] font-black uppercase tracking-[0.3em] text-stone-300 bg-transparent px-4 mx-auto w-fit">
+                          Atau
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={() => {
+                          setIsCartOpen(false);
+                          setIsScheduling(true);
+                        }}
+                        className="w-full bg-stone-50 text-stone-900 py-4 rounded-[24px] font-bold text-xs flex items-center justify-center gap-3 border border-stone-100 active:bg-stone-100 transition-all font-sans"
                       >
-                        <div className="w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0">
-                          <MenuIcon item={item} size={28} />
-                        </div>
-                        <div className="flex-grow">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <h4 className="font-bold text-stone-900">{item.name}</h4>
-                              <p className="text-xs text-stone-400 mb-2">{item.category}</p>
-                            </div>
-                            {item.option && (
-                              <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[10px] font-black uppercase tracking-wider shadow-sm ${
-                                item.option === 'Es' 
-                                  ? 'bg-blue-500 text-white' 
-                                  : 'bg-orange-600 text-white'
-                              }`}>
-                                {item.option === 'Es' ? <Star size={10} fill="currentColor" /> : <Coffee size={10} />}
-                                {item.option}
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-4">
-                            <div className="flex items-center gap-3 bg-stone-100 rounded-xl px-2 py-1">
-                              <button 
-                                onClick={() => removeFromCart(item.id, item.option)}
-                                className="w-8 h-8 rounded-lg flex items-center justify-center text-stone-600"
-                              >
-                                <Minus size={16} />
-                              </button>
-                              <span className="font-bold text-stone-900">{item.quantity}</span>
-                              <button 
-                                onClick={() => addToCart(item, item.option)}
-                                className="w-8 h-8 rounded-lg flex items-center justify-center text-stone-600"
-                              >
-                                <Plus size={16} />
-                              </button>
-                            </div>
-                            <button 
-                              onClick={() => setNoteModalItem({ id: item.id, option: item.option, note: item.note || '' })}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all ${
-                                item.note 
-                                  ? 'bg-orange-500 text-white shadow-sm' 
-                                  : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
-                              }`}
-                            >
-                              <Settings size={12} />
-                              {item.note ? 'Edit Catatan' : 'Tambah Catatan'}
-                            </button>
-                          </div>
-                          {item.note && (
-                            <div className="mt-2 p-2 bg-orange-50 rounded-xl border border-orange-100">
-                              <p className="text-[10px] text-orange-600 font-medium italic">"{item.note}"</p>
-                            </div>
-                          )}
-                        </div>
-                      </motion.div>
+                        <Calendar size={18} className="text-orange-500" />
+                        Jadwalkan untuk Nanti
+                      </button>
                     </div>
-                  ))
+                  </>
                 )}
               </div>
-
-              {cart.length > 0 && (
-                <div className="p-8 bg-white border-t border-stone-100">
-                  <div className="mb-6">
-                    <p className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-3">Pilihan Penyajian</p>
-                    <div className="flex p-1 bg-stone-100 rounded-2xl">
-                      <button 
-                        onClick={() => setOrderType('Makan di Tempat')}
-                        className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all ${
-                          orderType === 'Makan di Tempat' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-400'
-                        }`}
-                      >
-                        Makan di Tempat
-                      </button>
-                      <button 
-                        onClick={() => setOrderType('Bungkus')}
-                        className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all ${
-                          orderType === 'Bungkus' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-400'
-                        }`}
-                      >
-                        Bungkus
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 mb-8">
-                    <div className="flex justify-between text-stone-500">
-                      <span>Total Item</span>
-                      <span className="font-bold text-stone-900">{totalItems} Menu</span>
-                    </div>
-                    <div className="h-px bg-stone-100 my-4" />
-                    <div className="flex justify-between text-xl font-bold text-stone-900">
-                      <span>Total Pesanan</span>
-                      <span>{totalItems} Item</span>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={sendToWhatsApp}
-                    className="w-full py-5 bg-orange-500 text-white rounded-[24px] font-bold text-lg flex items-center justify-center gap-3 hover:bg-orange-600 transition-all shadow-xl shadow-orange-200"
-                  >
-                    Konfirmasi Pesanan
-                    <ArrowRight size={20} />
-                  </button>
-                </div>
-              )}
             </motion.div>
           </>
         )}
       </AnimatePresence>
+
 
       {/* AI Chat Modal */}
       <AnimatePresence>
@@ -1933,67 +3247,252 @@ export default function App() {
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[90vh] bg-[#F8F9FB] rounded-t-[40px] shadow-2xl z-[80] flex flex-col overflow-hidden"
+              className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[92vh] bg-[#FDFEFE] rounded-t-[48px] shadow-2xl z-[80] flex flex-col overflow-hidden"
             >
-              {/* Header */}
-              <div className="bg-white px-8 pt-6 pb-4 flex items-center justify-between border-b border-stone-100">
+              {/* Minimal Header */}
+              <div className="flex-shrink-0 px-8 py-6 flex items-center justify-between bg-white border-b border-stone-50 z-10 shadow-sm">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white">
-                    <Bot size={24} />
+                  <div className="group relative">
+                    <div className="w-10 h-10 bg-stone-900 rounded-2xl flex items-center justify-center text-white overflow-hidden shadow-lg border-2 border-white ring-1 ring-stone-100 transition-transform group-hover:scale-105">
+                      <div className="w-full h-full bg-white rounded-full flex flex-col items-center justify-center p-1">
+                         <div className="w-3 h-3 bg-stone-900 rounded-full" />
+                      </div>
+                    </div>
+                    <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white animate-pulse" />
                   </div>
                   <div>
-                    <h2 className="text-lg font-bold text-stone-900 leading-tight">Koki AI RM Segar</h2>
-                    <div className="flex items-center gap-1">
-                      <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                      <span className="text-[10px] text-stone-400 font-bold uppercase tracking-wider">Online</span>
-                    </div>
+                    <h2 className="text-base font-black text-stone-900 tracking-tight">Master Panda</h2>
+                    <p className="text-[10px] text-stone-400 font-bold uppercase tracking-wider">Culinary Butler</p>
                   </div>
                 </div>
-                <button 
-                  onClick={() => setIsChatOpen(false)}
-                  className="w-10 h-10 bg-stone-100 rounded-full flex items-center justify-center text-stone-500"
-                >
-                  <X size={20} />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => {
+                      setShowOrderHistory(true);
+                      setActiveTab('profile');
+                      setIsChatOpen(false);
+                    }}
+                    className="w-10 h-10 bg-stone-50 hover:bg-stone-100 rounded-2xl flex items-center justify-center text-stone-400 transition-colors shadow-sm"
+                    title="Riwayat Pesanan"
+                  >
+                    <History size={20} strokeWidth={2.5} />
+                  </button>
+                  <button 
+                    onClick={clearChat}
+                    className="w-10 h-10 bg-stone-50 hover:bg-stone-100 rounded-2xl flex items-center justify-center text-stone-400 transition-colors shadow-sm"
+                    title="Hapus Percakapan"
+                  >
+                    <Trash2 size={20} strokeWidth={2.5} />
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setIsChatOpen(false);
+                      setPandaMood('idle');
+                    }}
+                    className="w-12 h-12 bg-stone-50 hover:bg-stone-100 rounded-2xl flex items-center justify-center text-stone-400 transition-colors shadow-sm"
+                  >
+                    <X size={24} strokeWidth={2.5} />
+                  </button>
+                </div>
               </div>
 
-              {/* Chat Messages */}
-              <div className="flex-grow overflow-y-auto p-6 space-y-4 no-scrollbar">
-                {chatMessages.map((msg, idx) => (
-                  <motion.div 
-                    key={idx}
-                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div className={`max-w-[85%] p-4 rounded-3xl text-sm leading-relaxed shadow-sm ${
-                      msg.role === 'user' 
-                        ? 'bg-orange-500 text-white rounded-tr-none' 
-                        : 'bg-white text-stone-700 rounded-tl-none border border-stone-100'
-                    }`}>
-                      {msg.text}
-                    </div>
-                  </motion.div>
-                ))}
-                
-                {isAIThinking && !chatMessages[chatMessages.length - 1]?.text && (
-                  <div className="flex justify-start">
-                    <div className="bg-white p-4 rounded-3xl rounded-tl-none border border-stone-100 shadow-sm flex gap-1">
-                      <motion.div animate={{ opacity: [0.3, 1, 0.3] }} transition={{ repeat: Infinity, duration: 1 }} className="w-1.5 h-1.5 bg-stone-300 rounded-full" />
-                      <motion.div animate={{ opacity: [0.3, 1, 0.3] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-1.5 h-1.5 bg-stone-300 rounded-full" />
-                      <motion.div animate={{ opacity: [0.3, 1, 0.3] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-1.5 h-1.5 bg-stone-300 rounded-full" />
-                    </div>
-                  </div>
+              {/* Chat Container */}
+              <div ref={scrollRef} className="flex-grow overflow-y-auto px-8 pt-4 pb-32 space-y-6 no-scrollbar bg-white/50 backdrop-blur-sm relative">
+                {chatMessages.length === 0 && (
+                   <div className="h-full flex flex-col items-center justify-center text-center px-10 pb-20 opacity-40">
+                      <Bot size={48} className="text-stone-200 mb-6" />
+                      <p className="text-sm font-medium text-stone-400">Sapa Master Panda untuk memulai obrolan kulinermu 🎋</p>
+                   </div>
                 )}
 
-                {/* Quick Suggestions - Moved inside scroll area to prevent cutting off */}
-                {chatMessages.length === 1 && !isAIThinking && (
-                  <div className="pt-2 flex flex-wrap gap-2">
-                    {["Rekomendasi mie", "Menu nasi favorit", "Minuman segar", "Menu paling pedas"].map(suggestion => (
+                {chatMessages.map((msg, idx) => {
+                  const isAdminNotified = msg.text.includes('[NOTIFIKASI_ADMIN: AKTIF]');
+                  let workingText = msg.text.replace('[NOTIFIKASI_ADMIN: AKTIF]', '');
+                  
+                  // Extract options if [OPSI: A|B] exists
+                  const optionsMatch = workingText.match(/\[OPSI:\s*(.*?)\]/);
+                  const options = optionsMatch ? optionsMatch[1].split('|').map(o => o.trim()) : [];
+                  let textWithWa = workingText.replace(/\[OPSI:\s*.*?\]/, '').trim();
+                  
+                  // Extract WA_LINK if exists
+                  const waMatch = textWithWa.match(/\[WA_LINK:\s*(.*?)\|(.*?)\]/);
+                  const waLink = waMatch ? { url: waMatch[1], label: waMatch[2] } : null;
+                  let intermediateText = textWithWa.replace(/\[WA_LINK:\s*.*?\]/, '').trim();
+
+                  // Extract QR_CODE if exists
+                  const qrMatch = intermediateText.match(/\[QR_CODE:\s*(.*?)\]/);
+                  let qrData = null;
+                  try {
+                    if (qrMatch) qrData = JSON.parse(qrMatch[1]);
+                  } catch (e) {
+                    // Silently fail if not valid JSON
+                  }
+                  const cleanText = intermediateText.replace(/\[QR_CODE:\s*.*?\]/, '').trim();
+                  
+                  return (
+                    <motion.div 
+                      key={idx}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
+                    >
+                      <div className={`max-w-[88%] px-6 py-4 rounded-[28px] text-[15px] leading-[1.6] shadow-sm tracking-tight ${
+                        msg.role === 'user' 
+                          ? 'bg-stone-900 text-white rounded-tr-none' 
+                          : 'bg-white text-stone-700 rounded-tl-none border border-stone-50'
+                      }`}>
+                        {cleanText.split(/(\[MENU_ITEM:.*?\])/g).map((part, pIdx) => {
+                          const menuMatch = part.match(/\[MENU_ITEM:\s*(.*?)\|(.*?)\]/);
+                          if (menuMatch) {
+                            const [_, mId, mName] = menuMatch;
+                            return (
+                              <div key={pIdx} className="my-3 p-4 bg-stone-50/80 border border-stone-100 rounded-2xl flex items-center gap-4 group">
+                                <div className="p-2 bg-orange-100 text-orange-600 rounded-xl">
+                                  <Utensils size={18} />
+                                </div>
+                                <div className="flex-grow">
+                                  <p className="text-sm font-black text-stone-900 leading-none">{mName}</p>
+                                  <p className="text-[10px] text-stone-400 mt-1 uppercase font-bold tracking-wider">Ketuk untuk pesan</p>
+                                </div>
+                                <div className="flex gap-2">
+                                  <button 
+                                    onClick={() => handleSendMessage(undefined, `Saya mau pesan ${mName}`)}
+                                    className="px-4 py-2 bg-stone-900 text-white rounded-xl text-[10px] font-black uppercase tracking-wider hover:bg-orange-500 transition-colors shadow-lg shadow-stone-900/10 active:scale-95"
+                                  >
+                                    Pesan
+                                  </button>
+                                  <button 
+                                    onClick={() => handleSendMessage(undefined, `Beri catatan untuk ${mName}`)}
+                                    className="p-2 bg-white border border-stone-200 text-stone-500 rounded-xl hover:text-stone-900 hover:border-stone-900 transition-all active:scale-95"
+                                    title="Tambah Catatan"
+                                  >
+                                    <Edit3 size={16} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          }
+                          return part;
+                        })}
+
+                        {qrData && (
+                          <div className="mt-4 p-5 bg-white rounded-2xl border border-stone-100 flex flex-col items-center gap-3 shadow-sm">
+                            <div className="w-10 h-10 bg-stone-50 rounded-full flex items-center justify-center text-stone-900 mb-1">
+                              <QrCode size={20} />
+                            </div>
+                            <p className="text-[10px] font-black text-stone-400 uppercase tracking-widest text-center">QR Kode Pesanan</p>
+                            <div className="p-2 bg-white border border-stone-50 rounded-xl">
+                              <QRCodeSVG 
+                                value={JSON.stringify({ ...qrData, type: 'rm_segar_order' })} 
+                                size={140} 
+                              />
+                            </div>
+                            <button 
+                              onClick={() => {
+                                if (qrData.items) {
+                                  const newItems = qrData.items.map((i: any) => {
+                                    const menu = MENU_ITEMS.find(m => m.id === i.id);
+                                    if (menu) return { ...menu, quantity: i.q, option: i.o };
+                                    return null;
+                                  }).filter(Boolean);
+                                  setCart(newItems as any);
+                                  setIsCartOpen(true);
+                                  setIsChatOpen(false);
+                                }
+                              }}
+                              className="w-full py-3 bg-stone-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest mt-2 active:scale-95 transition-transform"
+                            >
+                              Reorder Pesanan Ini
+                            </button>
+                          </div>
+                        )}
+
+                        {waLink && (
+                          <div className="mt-4 pt-4 border-t border-stone-100">
+                            <a 
+                              href={waLink.url} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="w-full flex items-center justify-center gap-3 py-5 bg-[#25D366] text-white rounded-2xl text-sm font-black uppercase tracking-wider hover:scale-[1.02] transition-all shadow-xl shadow-green-500/10 active:scale-95"
+                            >
+                              <MessageCircle size={20} fill="currentColor" className="text-white/20" />
+                              {waLink.label}
+                            </a>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Render Options if any */}
+                      {options.length > 0 && msg.role === 'model' && (
+                        <div className="mt-3 flex flex-wrap gap-2 max-w-[90%]">
+                          {options.map((opt, oIdx) => (
+                            <button
+                              key={oIdx}
+                              onClick={() => handleSendMessage(undefined, opt)}
+                              className="px-4 py-2 bg-stone-50 border border-stone-100 rounded-xl text-xs font-black text-stone-600 shadow-sm active:scale-95 transition-all hover:bg-stone-900 hover:text-white"
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Connect AI Button for errors */}
+                      {msg.role === 'model' && (msg.text.includes("Kunci API") || msg.text.includes("Settings -> Secrets") || msg.text.includes("Hubungkan AI")) && (
+                        <div className="mt-4 p-4 bg-stone-900 rounded-2xl shadow-xl space-y-3">
+                          <p className="text-[10px] text-stone-400 font-bold uppercase tracking-[0.2em] text-center">
+                            Akses AI Terputus 🎋
+                          </p>
+                          <button 
+                            onClick={handleOpenSelectKey}
+                            className="w-full py-3 bg-orange-500 text-white rounded-xl text-xs font-black shadow-lg shadow-orange-500/20 hover:scale-[1.02] active:scale-95 transition-all"
+                          >
+                            HUBUNGKAN MASTER PANDA
+                          </button>
+                          <p className="text-[9px] text-stone-500 text-center italic">
+                            *Hanya perlu satu klik jika Kakak sudah punya key
+                          </p>
+                        </div>
+                      )}
+
+                      {isAdminNotified && (
+                        <motion.div 
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="mt-2 flex items-center gap-2 bg-green-500/10 text-green-600 px-3 py-1.5 rounded-xl border border-green-200 shadow-sm"
+                        >
+                          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                          <span className="text-[10px] font-black uppercase tracking-widest">Terkirim ke Admin</span>
+                        </motion.div>
+                      )}
+                    </motion.div>
+                  );
+                })}
+                
+                {isAIThinking && (chatMessages[chatMessages.length - 1]?.role === 'user' || !chatMessages[chatMessages.length - 1]?.text) && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex justify-start"
+                  >
+                    <div className="bg-white px-6 py-4 rounded-3xl rounded-tl-none border border-stone-50 shadow-sm flex items-center gap-3">
+                      <div className="flex gap-1.5">
+                        <motion.div animate={{ scale: [1, 1.4, 1] }} transition={{ repeat: Infinity, duration: 1 }} className="w-2 h-2 bg-orange-400 rounded-full" />
+                        <motion.div animate={{ scale: [1, 1.4, 1] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-2 h-2 bg-orange-400 rounded-full" />
+                        <motion.div animate={{ scale: [1, 1.4, 1] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-2 h-2 bg-orange-400 rounded-full" />
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Suggestions Section */}
+                {chatMessages.length <= 2 && !isAIThinking && (
+                  <div className="pt-4 flex flex-wrap gap-2.5">
+                    {["📜 Lihat Menu", "🍜 Menu jagoan?", "🥢 Bakmie/Kwetiao", "🥤 Minuman segar", "🥡 Rekomendasi bungkus", "🗓️ Reservasi Meja"].map(suggestion => (
                       <button 
                         key={suggestion}
-                        onClick={() => handleSendMessage(undefined, suggestion)}
-                        className="px-4 py-2 bg-white border border-stone-100 rounded-full text-xs font-bold text-stone-600 shadow-sm active:scale-95 transition-all hover:border-orange-200 hover:bg-orange-50"
+                        onClick={() => handleSendMessage(undefined, suggestion.substring(suggestion.indexOf(' ') + 1))}
+                        className="px-5 py-2.5 bg-stone-50 border border-stone-100 rounded-2xl text-[13px] font-bold text-stone-600 shadow-sm active:scale-95 transition-all hover:bg-stone-900 hover:text-white"
                       >
                         {suggestion}
                       </button>
@@ -2003,51 +3502,37 @@ export default function App() {
                 <div ref={chatEndRef} />
               </div>
 
-              {/* Input Area */}
-              <div className="bg-white p-6 pb-10 border-t border-stone-100 shadow-[0_-10px_40px_rgba(0,0,0,0.02)]">
-                {(!hasEnvKey && !apiKeySelected && (window as any).aistudio) ? (
-                  <div className="flex flex-col items-center gap-3 p-4 bg-orange-50 rounded-2xl border border-orange-100">
-                    <p className="text-xs text-orange-800 text-center font-medium">
-                      Hubungkan API Key untuk mulai mengobrol dengan Koki AI di link publik ini.
-                    </p>
-                    <button 
-                      onClick={handleOpenSelectKey}
-                      className="px-6 py-2 bg-orange-500 text-white rounded-xl text-xs font-bold shadow-sm hover:bg-orange-600 transition-all"
-                    >
-                      Hubungkan AI
-                    </button>
-                    <a 
-                      href="https://ai.google.dev/gemini-api/docs/billing" 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-[10px] text-orange-400 underline"
-                    >
-                      Pelajari tentang Billing
-                    </a>
-                  </div>
-                ) : (
-                  <form onSubmit={handleSendMessage} className="relative flex items-center gap-3">
-                    <input 
-                      type="text" 
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="Tanya koki AI..."
-                      className="flex-grow bg-stone-50 border-none rounded-2xl py-4 px-6 pr-14 text-sm text-stone-900 placeholder:text-stone-400 focus:ring-2 focus:ring-orange-500/20 transition-all outline-none"
-                    />
-                    <button 
-                      type="submit"
-                      disabled={!chatInput.trim() || isAIThinking}
-                      className="absolute right-2 w-10 h-10 bg-orange-500 text-white rounded-xl flex items-center justify-center shadow-lg shadow-orange-100 disabled:opacity-50 transition-all active:scale-90"
-                    >
-                      <Send size={18} />
-                    </button>
-                  </form>
-                )}
+              {/* Floating Premium Input Box */}
+              <div className="absolute inset-x-0 bottom-0 p-6 pt-2 bg-gradient-to-t from-white via-white/90 to-transparent pointer-events-none">
+                <div className="max-w-xl mx-auto pointer-events-auto">
+                    <form onSubmit={handleSendMessage} className="relative flex items-center group">
+                        <div className="absolute left-5 text-stone-300 group-focus-within:text-orange-500 transition-colors">
+                            <Utensils size={20} />
+                        </div>
+                        <input 
+                        type="text" 
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        placeholder="Tanya apapun ke Master Panda..."
+                        className="w-full bg-white border border-stone-100 rounded-[32px] py-6 pl-14 pr-20 text-[15px] text-stone-900 placeholder:text-stone-300 shadow-xl focus:ring-4 focus:ring-stone-100/50 transition-all outline-none"
+                        />
+                        <button 
+                        type="submit"
+                        disabled={!chatInput.trim() || isAIThinking}
+                        className="absolute right-3 w-14 h-14 bg-stone-900 text-white rounded-full flex items-center justify-center shadow-xl disabled:opacity-30 transition-all active:scale-90 hover:bg-orange-500"
+                        >
+                        <ArrowRight size={24} strokeWidth={2.5} />
+                        </button>
+                    </form>
+                </div>
               </div>
             </motion.div>
           </>
         )}
       </AnimatePresence>
+
+      {/* Scheduling Modal */}
+      {renderSchedulingModal()}
 
       {/* Note Modal */}
       <AnimatePresence>
@@ -2058,13 +3543,13 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setNoteModalItem(null)}
-              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[70]"
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[200]"
             />
             <motion.div 
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-sm bg-white rounded-[32px] shadow-2xl z-[70] overflow-hidden"
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-sm bg-white rounded-[32px] shadow-2xl z-[200] overflow-hidden"
             >
               <div className="p-8 space-y-6">
                 <div className="text-center space-y-2">
@@ -2082,15 +3567,15 @@ export default function App() {
                   />
                 </div>
 
-                <div className="flex gap-3">
+                <div className="flex gap-4">
                   <button 
                     onClick={() => setNoteModalItem(null)}
-                    className="flex-1 py-4 bg-stone-100 text-stone-500 rounded-2xl font-bold text-sm"
+                    className="flex-1 py-4 bg-stone-100 text-stone-900 rounded-2xl font-bold text-sm"
                   >
                     Batal
                   </button>
                   <button 
-                    onClick={() => updateNote(noteModalItem.id, noteModalItem.option, noteModalItem.note)}
+                    onClick={() => updateNote(noteModalItem.id, noteModalItem.option, noteModalItem.sweetness, noteModalItem.note)}
                     className="flex-1 py-4 bg-orange-500 text-white rounded-2xl font-bold text-sm shadow-lg shadow-orange-100"
                   >
                     Simpan
@@ -2102,6 +3587,9 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* Waiting Game Modal */}
+      {renderGame()}
+
       {/* Option Selection Modal */}
       <AnimatePresence>
         {optionModalItem && (
@@ -2111,13 +3599,13 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setOptionModalItem(null)}
-              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60]"
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[210]"
             />
             <motion.div 
               initial={{ scale: 0.9, opacity: 0, y: 20 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-sm bg-white rounded-[32px] shadow-2xl z-[60] overflow-hidden"
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-sm bg-white rounded-[32px] shadow-2xl z-[210] overflow-hidden"
             >
               <div className="p-8 space-y-6">
                 <div className="text-center space-y-2">
@@ -2158,8 +3646,27 @@ export default function App() {
                   </button>
                 </div>
 
+                <div className="space-y-4">
+                  <p className="text-center text-xs font-bold text-stone-400 uppercase tracking-widest">Tingkat Kemanisan</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {['Manis', 'Tawar', 'Sedikit Gula'].map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => setSelectedSweetness(s as any)}
+                        className={`py-3 rounded-2xl text-xs font-bold border-2 transition-all ${
+                          selectedSweetness === s
+                            ? 'border-orange-500 bg-orange-50 text-orange-600'
+                            : 'border-stone-100 bg-stone-50 text-stone-400'
+                        }`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <button 
-                  onClick={() => addToCart(optionModalItem, selectedOption)}
+                  onClick={() => addToCart(optionModalItem, selectedOption, selectedSweetness)}
                   className="w-full py-4 bg-orange-500 text-white rounded-2xl font-bold text-lg shadow-lg shadow-orange-100"
                 >
                   Tambah ke Keranjang
@@ -2169,14 +3676,416 @@ export default function App() {
           </>
         )}
       </AnimatePresence>
-          </>
-        )}
 
-        {/* Onboarding Overlay */}
+      {/* Onboarding Overlay */}
+      <AnimatePresence>
+        {activeTour && renderOnboarding()}
+      </AnimatePresence>
+        {/* Tutorial Modal */}
         <AnimatePresence>
-          {activeTour && renderOnboarding()}
+          {showTutorial && (
+            <>
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowTutorial(false)}
+                className="fixed inset-0 bg-stone-900/60 backdrop-blur-md z-[300]"
+              />
+              <motion.div 
+                initial={{ y: '100%' }}
+                animate={{ y: 0 }}
+                exit={{ y: '100%' }}
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[85vh] bg-white rounded-t-[40px] shadow-2xl z-[300] flex flex-col overflow-hidden"
+              >
+                <div className="w-12 h-1.5 bg-stone-200 rounded-full mx-auto mt-4 mb-6 flex-shrink-0" />
+                
+                <div className="px-8 pb-6 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-black text-stone-900 tracking-tight">Panduan Fitur</h2>
+                    <p className="text-xs font-bold text-stone-400 uppercase tracking-widest mt-1">Sederhana, Cepat, Lezat</p>
+                  </div>
+                  <button 
+                    onClick={() => setShowTutorial(false)}
+                    className="w-10 h-10 bg-stone-50 rounded-xl flex items-center justify-center text-stone-400 active:bg-stone-100"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <div className="flex-grow overflow-y-auto px-8 pb-10 space-y-6 no-scrollbar">
+                  {[
+                    { icon: <MessageCircle />, color: 'bg-yellow-50 text-yellow-600', title: "Chat Master Panda 🐼", desc: "Ngobrol dengan AI untuk cari menu, reservasi meja, atau pesan via suara & teks secara instan." },
+                    { icon: <ShoppingBag />, color: 'bg-orange-50 text-orange-500', title: "Cara Pesan Menu", desc: "Pilih hidangan favoritmu, lalu tekan tombol '+' untuk memasukkannya ke keranjang belanja." },
+                    { icon: <MessageSquare />, color: 'bg-blue-50 text-blue-500', title: "Kustomisasi & Note", desc: "Butuh tanpa micin atau ekstra sambal? Klik ikon balon chat di setiap item dalam keranjangmu." },
+                    { icon: <RefreshCw />, color: 'bg-purple-50 text-purple-500', title: "Es atau Panas?", desc: "Khusus minuman, kamu bisa menukar pilihan 'Es' atau 'Panas' fleksibel langsung di keranjang." },
+                    { icon: <Calendar />, color: 'bg-green-50 text-green-500', title: "Reservasi & Jadwal", desc: "Gunakan fitur 'Jadwalkan' untuk booking meja atau memesan makanan untuk waktu yang akan datang." },
+                    { icon: <Trash2 />, color: 'bg-red-50 text-red-500', title: "Swipe untuk Hapus", desc: "Salah pilih? Geser (Swipe) menu ke kiri di dalam keranjang, lalu tekan ikon tong sampah Merah." },
+                    { icon: <Send />, color: 'bg-[#25D366]/10 text-[#25D366]', title: "Checkout WhatsApp", desc: "Pesananmu akan dikirim langsung ke WhatsApp Admin agar segera diproses & dikirim." },
+                    { icon: <QrCode />, color: 'bg-stone-100 text-stone-900', title: "Scan QR Meja", desc: "Pindai kode QR digital di meja untuk akses cepat ke menu tanpa perlu mengunduh aplikasi." },
+                    { icon: <Gamepad2 />, color: 'bg-indigo-50 text-indigo-500', title: "Game Selagi Menunggu", desc: "Bosan menunggu? Mainkan game 'Panda Noodle' di tab profil untuk skor tertinggi!" },
+                  ].map((feature, idx) => (
+                    <div key={idx} className="flex gap-5 group items-start">
+                      <div className={`w-12 h-12 ${feature.color} rounded-2xl flex items-center justify-center flex-shrink-0 shadow-sm transition-transform group-hover:rotate-12`}>
+                        {feature.icon}
+                      </div>
+                      <div className="space-y-1">
+                        <h4 className="font-black text-stone-900 leading-none">{feature.title}</h4>
+                        <p className="text-sm text-stone-500 leading-relaxed">{feature.desc}</p>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="bg-stone-900 p-8 rounded-[32px] text-white mt-8 space-y-4 shadow-xl shadow-stone-200">
+                    <h4 className="text-lg font-black tracking-tight">Butuh bantuan lebih?</h4>
+                    <p className="text-stone-400 text-sm leading-relaxed">Pahami fitur RM Segar dalam hitungan detik dengan panduan interaktif kami.</p>
+                    <div className="space-y-3">
+                      <button 
+                        onClick={() => {
+                          setShowTutorial(false);
+                          setCompletedTours({});
+                          localStorage.removeItem('rm_segar_completed_tours');
+                          handleTabChange('home');
+                          setActiveTour('home');
+                          setTourStep(0);
+                        }}
+                        className="w-full bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-2xl active:scale-95 transition-all flex items-center justify-center gap-3"
+                      >
+                        <Sparkles size={20} />
+                        Mulai Panduan Interaktif
+                      </button>
+                      <button 
+                        onClick={() => setShowTutorial(false)}
+                        className="w-full bg-white/10 hover:bg-white/20 text-white font-black py-4 rounded-2xl active:scale-95 transition-all"
+                      >
+                        Saya Mengerti
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </>
+          )}
+          {showScanner && (
+            <QRScanner 
+              onScanSuccess={handleScanSuccess}
+              onClose={() => setShowScanner(false)}
+            />
+          )}
         </AnimatePresence>
       </div>
     </div>
   );
 }
+
+interface GameObject {
+  id: number;
+  x: number;
+  y: number;
+  type: 'noodle' | 'bomb';
+  speed: number;
+}
+
+const PandaNoodleGame = ({ onGameOver }: { onGameOver: (score: number) => void }) => {
+  const [score, setScore] = useState(0);
+  const [pandaX, setPandaX] = useState(50);
+  const [objects, setObjects] = useState<GameObject[]>([]);
+  const [gameState, setGameState] = useState<'idle' | 'playing' | 'over'>('idle');
+  const [lives, setLives] = useState(3);
+  
+  const gameRef = useRef<HTMLDivElement>(null);
+  const requestRef = useRef<number>(0);
+  const objectsRef = useRef<GameObject[]>([]);
+  const lastSpawnRef = useRef<number>(0);
+  const scoreRef = useRef(0);
+  const livesRef = useRef(3);
+  const pandaXRef = useRef(50);
+
+  const prevPandaXRef = useRef(50);
+  const [tilt, setTilt] = useState(0);
+  const [isHit, setIsHit] = useState(false);
+  const [feedback, setFeedback] = useState<{ x: number, text: string } | null>(null);
+
+  const [isCatching, setIsCatching] = useState(false);
+
+  const startGame = () => {
+    scoreRef.current = 0;
+    livesRef.current = 3;
+    objectsRef.current = [];
+    lastSpawnRef.current = performance.now();
+    setScore(0);
+    setLives(3);
+    setObjects([]);
+    setGameState('playing');
+    setIsHit(false);
+    setIsCatching(false);
+  };
+
+  const animate = useCallback((time: number) => {
+    if (gameState !== 'playing') return;
+
+    const spawnRate = Math.max(300, 1000 - (scoreRef.current * 8));
+    if (time - lastSpawnRef.current > spawnRate) {
+      const newObj: GameObject = {
+        id: Math.random(),
+        x: Math.random() * 80 + 10,
+        y: -10,
+        type: Math.random() > 0.15 ? 'noodle' : 'bomb',
+        speed: 0.6 + Math.random() * 0.3 + (scoreRef.current / 120)
+      };
+      // Add a hidden property to track movement delta for better collision
+      (newObj as any).prevY = -10;
+      objectsRef.current.push(newObj);
+      lastSpawnRef.current = time;
+    }
+
+    const updatedObjects: GameObject[] = [];
+    let livesChanged = false;
+    let scoreChanged = false;
+    let currentlyCatching = false;
+
+    // Pixel-aware hitbox width
+    const containerWidth = gameRef.current?.getBoundingClientRect().width || 400;
+    const pandaWidthPercent = (110 / containerWidth) * 100; // Visual width is roughly 96-110px
+
+    for (const obj of objectsRef.current) {
+      const oldY = obj.y;
+      obj.y += obj.speed * 1.4; 
+
+      const horizontalDist = Math.abs(obj.x - pandaXRef.current);
+      const isNoodle = obj.type === 'noodle';
+      const hitLimit = isNoodle ? (pandaWidthPercent / 2) + 4 : (pandaWidthPercent / 2) - 3;
+      
+      // Robust Collision: Check if object is in range OR if it crossed the catch line this frame
+      const catchLine = 88;
+      const hitRange = obj.y >= 80 && obj.y <= 95;
+      const crossedLine = oldY < catchLine && obj.y >= catchLine;
+      
+      const hitPanda = (hitRange || crossedLine) && horizontalDist < hitLimit;
+
+      if (hitPanda) {
+        if (isNoodle) {
+          scoreRef.current += 1;
+          scoreChanged = true;
+          setFeedback({ x: obj.x, text: '+1' });
+          currentlyCatching = true;
+        } else {
+          livesRef.current -= 1;
+          livesChanged = true;
+          setIsHit(true);
+          setFeedback({ x: obj.x, text: '💣' });
+          setTimeout(() => setIsHit(false), 200);
+        }
+        continue;
+      }
+
+      if (obj.y > 110) {
+        if (isNoodle) {
+          livesRef.current -= 1;
+          livesChanged = true;
+          setIsHit(true);
+          setFeedback({ x: obj.x, text: 'MISS' });
+          setTimeout(() => setIsHit(false), 200);
+        }
+        continue;
+      }
+
+      updatedObjects.push(obj);
+    }
+
+    if (currentlyCatching) {
+      setIsCatching(true);
+      setTimeout(() => setIsCatching(false), 150);
+    }
+
+    objectsRef.current = updatedObjects;
+    setObjects([...updatedObjects]);
+
+    if (scoreChanged) setScore(scoreRef.current);
+    if (livesChanged) {
+      setLives(livesRef.current);
+      if (livesRef.current <= 0) {
+        setGameState('over');
+        onGameOver(scoreRef.current);
+        return;
+      }
+    }
+
+    const velocity = pandaXRef.current - prevPandaXRef.current;
+    setTilt(velocity * 1.8);
+    prevPandaXRef.current = pandaXRef.current;
+
+    requestRef.current = requestAnimationFrame(animate);
+  }, [gameState, onGameOver]);
+
+  useEffect(() => {
+    if (feedback) {
+      const timer = setTimeout(() => setFeedback(null), 800);
+      return () => clearTimeout(timer);
+    }
+  }, [feedback]);
+
+  useEffect(() => {
+    if (gameState === 'playing') {
+      requestRef.current = requestAnimationFrame(animate);
+    }
+    return () => cancelAnimationFrame(requestRef.current);
+  }, [gameState, animate]);
+
+  const handleMove = useCallback((clientX: number) => {
+    if (gameState !== 'playing' || !gameRef.current) return;
+    const rect = gameRef.current.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const clampedX = Math.max(10, Math.min(90, x));
+    pandaXRef.current = clampedX;
+    setPandaX(clampedX);
+  }, [gameState]);
+
+  useEffect(() => {
+    const container = gameRef.current;
+    if (!container) return;
+
+    const handleTouch = (e: TouchEvent) => {
+      if (gameState !== 'playing') return;
+      if (e.cancelable) e.preventDefault();
+      if (e.touches && e.touches[0]) handleMove(e.touches[0].clientX);
+    };
+
+    container.addEventListener('touchmove', handleTouch, { passive: false });
+    container.addEventListener('touchstart', handleTouch, { passive: false });
+
+    return () => {
+      container.removeEventListener('touchmove', handleTouch);
+      container.removeEventListener('touchstart', handleTouch);
+    };
+  }, [gameState, handleMove]);
+
+  return (
+    <div 
+      ref={gameRef}
+      className={`w-full h-full relative cursor-none select-none bg-stone-50 overflow-hidden touch-none transition-colors duration-150 ${isHit ? 'bg-red-50/50 animate-shake' : ''}`}
+      onMouseMove={(e) => handleMove(e.clientX)}
+    >
+      {/* Background Pattern */}
+      <div className="absolute inset-0 opacity-[0.03] pointer-events-none" 
+        style={{ 
+          backgroundImage: 'radial-gradient(#000 1px, transparent 1px)', 
+          backgroundSize: '20px 20px' 
+        }} 
+      />
+
+      {gameState === 'idle' && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-8 text-center bg-white/40 backdrop-blur-md">
+          <div className="w-24 h-24 bg-orange-500 rounded-[32px] flex items-center justify-center text-white mb-6 shadow-xl">
+             <Bot size={48} />
+          </div>
+          <h3 className="text-2xl font-black text-stone-900 mb-2 tracking-tighter leading-none text-center uppercase">SIAP<br />MENYANTAP?</h3>
+          <p className="text-stone-500 text-xs px-12 mb-8 font-medium">Tangkap mie 🍜 sebanyak mungkin.<br/>Hindari BOMB 💣 dan jangan biarkan mie jatuh!</p>
+          <button 
+            onClick={startGame}
+            className="px-10 py-4 bg-stone-900 text-white rounded-3xl font-black shadow-lg active:scale-95 transition-all"
+          >
+            MULAI BERMAIN
+          </button>
+        </div>
+      )}
+
+      {gameState === 'over' && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-8 text-center bg-white/60 backdrop-blur-lg">
+          <p className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-2">Game Over</p>
+          <h3 className="text-4xl font-black text-stone-900 mb-6">SKOR: {score}</h3>
+          <button 
+            onClick={startGame}
+            className="mb-4 px-10 py-4 bg-orange-500 text-white rounded-3xl font-black shadow-lg active:scale-95 transition-all"
+          >
+            MAINKAN LAGI
+          </button>
+          <p className="text-xs text-stone-400 font-bold">Hebat! Sembari nunggu, panda kita satu ini makin kenyang.</p>
+        </div>
+      )}
+
+      {/* Game UI */}
+      {gameState === 'playing' && (
+        <>
+          <div className="absolute top-6 left-6 z-10">
+            <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest leading-none">Score</p>
+            <p className="text-3xl font-black text-stone-900 leading-none mt-1">{score}</p>
+          </div>
+          <div className="absolute top-6 right-6 z-10 flex gap-2">
+            {[...Array(3)].map((_, i) => (
+              <Heart 
+                key={i} 
+                size={20} 
+                className={i < lives ? "text-red-500 fill-current" : "text-stone-200"} 
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Falling Objects */}
+      {objects.map(obj => (
+        <div
+          key={obj.id}
+          className="absolute text-5xl pointer-events-none transition-none"
+          style={{ 
+            left: `${obj.x}%`, 
+            top: `${obj.y}%`, 
+            transform: 'translate(-50%, -50%)',
+            willChange: 'top' 
+          }}
+        >
+          {obj.type === 'noodle' ? '🍜' : '💣'}
+        </div>
+      ))}
+
+      {/* Feedback Text */}
+      <AnimatePresence>
+        {feedback && (
+          <motion.div
+            key={Date.now()}
+            initial={{ opacity: 0, y: 0 }}
+            animate={{ opacity: 1, y: -100 }}
+            exit={{ opacity: 0 }}
+            className="absolute bottom-40 text-2xl font-black pointer-events-none z-30"
+            style={{ 
+              left: `${feedback.x}%`,
+              color: feedback.text === '+1' ? '#f97316' : '#ef4444',
+              transform: 'translateX(-50%)' 
+            }}
+          >
+            {feedback.text}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Panda Character */}
+      <div 
+        className="absolute bottom-10 -translate-x-1/2 pointer-events-none transition-none"
+        style={{ 
+          left: `${pandaX}%`,
+          transform: `translateX(-50%) rotate(${tilt}deg)`,
+          willChange: 'left, transform'
+        }}
+      >
+        <div className={`relative w-24 h-18 bg-white border-[5px] border-stone-800 rounded-[36px] shadow-2xl transition-transform duration-75 ${isCatching ? 'scale-110' : 'scale-100'}`}>
+          {/* Ears */}
+          <div className="absolute -top-2 -left-2 w-8 h-8 bg-stone-900 rounded-full" />
+          <div className="absolute -top-2 -right-2 w-8 h-8 bg-stone-900 rounded-full" />
+          {/* Eyes */}
+          <div className="absolute top-4 left-5 w-5 h-7 bg-stone-900 rounded-[40%] flex items-center justify-center">
+            <div className={`w-2 h-2 bg-white rounded-full mb-3 transition-all ${isCatching ? 'scale-125 translate-y-1' : ''}`} />
+          </div>
+          <div className="absolute top-4 right-5 w-5 h-7 bg-stone-900 rounded-[40%] flex items-center justify-center">
+            <div className={`w-2 h-2 bg-white rounded-full mb-3 transition-all ${isCatching ? 'scale-125 translate-y-1' : ''}`} />
+          </div>
+          {/* Nose */}
+          <div className="absolute top-10 left-1/2 -translate-x-1/2 w-4 h-2.5 bg-stone-900 rounded-full" />
+          {/* Mouth Area */}
+          <div className={`absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full transition-all duration-100 ${isCatching ? 'w-10 h-6 bg-stone-900' : 'w-10 h-1 bg-stone-100 opacity-50'}`} />
+        </div>
+      </div>
+    </div>
+  );
+};

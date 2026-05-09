@@ -1,0 +1,81 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "phone": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "phone"]
+    },
+    "CartItem": {
+      "title": "Cart Item",
+      "description": "An item in the cart or order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "quantity": { "type": "number" },
+        "option": { "type": "string", "enum": ["Es", "Panas"] },
+        "sweetness": { "type": "string", "enum": ["Manis", "Tawar", "Sedikit Gula"] },
+        "note": { "type": "string" }
+      },
+      "required": ["id", "name", "price", "quantity"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "A food order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "items": { "type": "array", "items": { "$ref": "#/entities/CartItem" } },
+        "totalItems": { "type": "number" },
+        "orderType": { "type": "string", "enum": ["Makan di Tempat", "Bungkus", "Jadwalkan"] },
+        "paymentMethod": { "type": "string", "enum": ["Tunai", "Transfer"] },
+        "note": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Processing", "Selesai", "Batal"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "items", "totalItems", "orderType", "paymentMethod"]
+    },
+    "Reservation": {
+      "title": "Reservation",
+      "description": "A table reservation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string" },
+        "time": { "type": "string" },
+        "attendees": { "type": "number" },
+        "note": { "type": "string" },
+        "status": { "type": "string", "enum": ["Akan Datang", "Selesai", "Dibatalkan"] },
+        "items": { "type": "array", "items": { "$ref": "#/entities/CartItem" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "date", "time", "attendees", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Root user profile document"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Shared orders collection (searchable by admin or owner)"
+    },
+    "/reservations/{resId}": {
+      "schema": "Reservation",
+      "description": "Shared reservations collection"
+    }
+  }
+}

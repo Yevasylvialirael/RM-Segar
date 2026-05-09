@@ -70,35 +70,42 @@ export const MENU_ITEMS: MenuItem[] = [
     id: 'jeruk-nipis',
     name: 'Jeruk Nipis',
     category: 'Minuman',
-    description: 'Segar dan asam manis alami.',
+    description: 'Segar dan asam manis alami. Pilihan: Manis, Tawar, atau Sedikit Gula.',
     hasOptions: true
   },
   {
     id: 'teh',
     name: 'Teh',
     category: 'Minuman',
-    description: 'Teh manis klasik.',
+    description: 'Teh khas yang bisa dipesan manis, tawar, atau sedikit gula. Es atau hangat.',
     hasOptions: true
   },
   {
     id: 'susu-kedelai',
     name: 'Susu Kedelai',
     category: 'Minuman',
-    description: 'Susu kedelai murni yang menyehatkan.',
+    description: 'Susu kedelai murni yang menyehatkan. Pilihan: Manis, Tawar, atau Sedikit Gula.',
     hasOptions: true
   },
   {
     id: 'kopi',
-    name: 'Kopi',
+    name: 'Kopi Hitam',
     category: 'Minuman',
-    description: 'Kopi hitam mantap.',
+    description: 'Kopi hitam mantap, bisa es atau hangat. Pilihan: Manis, Tawar, atau Sedikit Gula.',
+    hasOptions: true
+  },
+  {
+    id: 'kopi-susu',
+    name: 'Kopi Susu',
+    category: 'Minuman',
+    description: 'Kopi dengan creamer/susu kental manis. Pilihan: Manis, Tawar, atau Sedikit Gula.',
     hasOptions: true
   },
   {
     id: 'extra-joss',
     name: 'Extra Joss',
     category: 'Minuman',
-    description: 'Minuman energi untuk stamina.',
+    description: 'Minuman energi untuk stamina. Pilihan: Manis, Tawar, atau Sedikit Gula.',
     hasOptions: true
   }
 ];
