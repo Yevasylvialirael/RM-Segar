@@ -183,6 +183,12 @@ export default function App() {
   const [pullY, setPullY] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  useEffect(() => {
+    if (showSuccess) {
+      scrollToTop();
+    }
+  }, [showSuccess]);
+
   const [isLoading, setIsLoading] = useState(true);
 
   const handleScanSuccess = useCallback((decodedText: string) => {
@@ -343,6 +349,7 @@ export default function App() {
     }
   };
 
+  const [isGameOpen, setIsGameOpen] = useState(false);
   const [gameScore, setGameScore] = useState(0);
   const [highScore, setHighScore] = useState(0);
 
@@ -375,6 +382,15 @@ export default function App() {
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const scrollToTop = () => {
+    if (isChatOpen) {
+      scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
 
   useEffect(() => {
@@ -3413,6 +3429,10 @@ export default function App() {
                               href={waLink.url} 
                               target="_blank" 
                               rel="noopener noreferrer"
+                              onClick={() => {
+                                // Add a small delay then scroll to top as visual feedback
+                                setTimeout(scrollToTop, 500);
+                              }}
                               className="w-full flex items-center justify-center gap-3 py-5 bg-[#25D366] text-white rounded-2xl text-sm font-black uppercase tracking-wider hover:scale-[1.02] transition-all shadow-xl shadow-green-500/10 active:scale-95"
                             >
                               <MessageCircle size={20} fill="currentColor" className="text-white/20" />
