@@ -39,14 +39,32 @@ import {
   Calendar,
   Clock,
   Edit3,
+  ExternalLink,
   HelpCircle,
   RefreshCw,
   Gamepad2
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { MENU_ITEMS, MenuItem } from './constants';
 import { QRScanner } from './components/QRScanner';
+import { db, auth, handleFirestoreError, OperationType } from './firebase';
+import { 
+  collection, 
+  setDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp, 
+  where 
+} from 'firebase/firestore';
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut 
+} from 'firebase/auth';
 
 interface CartItem extends MenuItem {
   quantity: number;
@@ -82,6 +100,65 @@ interface Reservation {
   orderType?: 'Makan di Tempat' | 'Bungkus';
   items?: CartItem[];
 }
+
+const LocationSection = () => {
+  return (
+    <div className="bg-white p-6 rounded-[32px] shadow-sm border border-stone-50 space-y-6">
+      <div className="flex flex-col lg:flex-row gap-6">
+        <div className="flex-1 space-y-6">
+          <div className="flex gap-4">
+            <div className="w-12 h-12 bg-orange-50 text-orange-500 rounded-2xl flex items-center justify-center flex-shrink-0">
+              <MapPin size={24} />
+            </div>
+            <div>
+              <h3 className="font-bold text-stone-900">Lokasi Kami</h3>
+              <p className="text-sm text-stone-500 leading-relaxed">
+                Jl. Keramat No.173, Pendawan, Kec. Sambas,<br />
+                Kabupaten Sambas, Kalimantan Barat
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-4">
+            <div className="w-12 h-12 bg-blue-50 text-blue-500 rounded-2xl flex items-center justify-center flex-shrink-0">
+              <Clock size={24} />
+            </div>
+            <div>
+              <h3 className="font-bold text-stone-900">Jam Operasional</h3>
+              <p className="text-sm text-stone-500">Buka Setiap Hari</p>
+              <p className="text-xl font-black text-orange-500 tracking-tight">06:00 - 18:00</p>
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <a 
+              href="https://maps.google.com/?q=Rumah+Makan+Segar+Jl.+Keramat+No.173+Sambas" 
+              target="_blank" 
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 text-sm font-bold text-orange-500 hover:text-orange-600 transition-colors"
+            >
+              <span>Petunjuk Arah</span>
+              <ExternalLink size={16} />
+            </a>
+          </div>
+        </div>
+
+        <div className="w-full lg:w-[400px] h-64 rounded-[32px] overflow-hidden border border-stone-100 shadow-inner relative bg-stone-50">
+          <iframe
+            src="https://www.google.com/maps?q=Rumah+Makan+Segar+Sambas+Jl.+Keramat&output=embed"
+            width="100%"
+            height="100%"
+            style={{ border: 0 }}
+            allowFullScreen={true}
+            loading="lazy"
+            referrerPolicy="no-referrer-when-downgrade"
+            title="Lokasi Rumah Makan Segar"
+          ></iframe>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const MenuIcon = ({ item, size = 32, className = "" }: { item: MenuItem, size?: number, className?: string }) => {
   const getIcon = () => {
@@ -127,26 +204,10 @@ const MainLogo = ({ size = 64, className = "" }: { size?: number, className?: st
   );
 };
 
-import { chatWithPanda } from './services/geminiService';
-import { db, auth, handleFirestoreError, OperationType } from './firebase';
-import { 
-  collection, 
-  setDoc, 
-  doc, 
-  onSnapshot, 
-  query, 
-  orderBy, 
-  serverTimestamp, 
-  where 
-} from 'firebase/firestore';
-import { 
-  onAuthStateChanged, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  signOut 
-} from 'firebase/auth';
-
 export default function App() {
+  const [isGameOpen, setIsGameOpen] = useState(false);
+  const [gameScore, setGameScore] = useState(0);
+  const [highScore, setHighScore] = useState(0);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -155,6 +216,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState('home');
+  const [prevActiveTab, setPrevActiveTab] = useState('home');
   const [showOrderHistory, setShowOrderHistory] = useState(false);
   const [showReservations, setShowReservations] = useState(false);
   const [reservations, setReservations] = useState<Reservation[]>([]);
@@ -167,6 +229,13 @@ export default function App() {
   const [orderNote, setOrderNote] = useState('');
   const [showTutorial, setShowTutorial] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const categoryScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (categoryScrollRef.current) {
+      categoryScrollRef.current.scrollLeft = categoryScrollRef.current.scrollWidth;
+    }
+  }, []);
   const [showAbout, setShowAbout] = useState(false);
   const [user, setUser] = useState<{ id: string, phone: string, displayName?: string, photoURL?: string } | null>(null);
   const [loginPhone, setLoginPhone] = useState('62');
@@ -190,6 +259,74 @@ export default function App() {
   }, [showSuccess]);
 
   const [isLoading, setIsLoading] = useState(true);
+
+  const scrollToTop = () => {
+    if (isChatOpen) {
+      scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const cartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleTabChange = (tab: string) => {
+    // Clear any pending cart open timeout
+    if (cartTimeoutRef.current) {
+      clearTimeout(cartTimeoutRef.current);
+      cartTimeoutRef.current = null;
+    }
+
+    // Ensure cart drawer closes when navigating to other main tabs
+    if (tab !== 'cart') {
+      setIsCartOpen(false);
+    }
+
+    // Reset any active tour when changing tabs
+    setActiveTour(null);
+    setTourStep(0);
+    
+    if (tab === 'home') {
+      scrollToTop();
+    }
+    
+    // Save search history if leaving search view
+    if (activeTab === 'search' && tab !== 'search' && searchQuery.trim()) {
+      setSearchHistory(prev => {
+        const newHistory = [searchQuery.trim(), ...prev.filter(h => h !== searchQuery.trim())].slice(0, 5);
+        return newHistory;
+      });
+      if (tab === 'home') setSearchQuery('');
+    }
+    
+    // Store current tab if it's a main view tab
+    if (tab !== 'cart') {
+      setPrevActiveTab(tab);
+    } else {
+      // If switching TO cart tab, keep the current tab as background
+      setPrevActiveTab(activeTab === 'cart' ? prevActiveTab : activeTab);
+    }
+    
+    setActiveTab(tab);
+    setShowOrderHistory(false);
+    setShowReservations(false);
+    setShowAbout(false);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      setLoginMode('login');
+      setLoginPhone('62');
+      setShowOrderHistory(false);
+      setShowAbout(false);
+      setActiveTab('home');
+    } catch (error) {
+      console.error("Logout Error:", error);
+    }
+  };
 
   const handleScanSuccess = useCallback((decodedText: string) => {
     try {
@@ -246,6 +383,109 @@ export default function App() {
   const [tourStep, setTourStep] = useState(0);
   const [completedTours, setCompletedTours] = useState<Record<string, boolean>>({});
   const [spotlightRect, setSpotlightRect] = useState<{ x: number, y: number, width: number, height: number, rx: number } | null>(null);
+  
+  const onboardingSteps: Record<string, any[]> = useMemo(() => ({
+    home: [
+      {
+        title: "Selamat Datang!",
+        description: "Nikmati kemudahan memesan Chinese Food khas Kalimantan Barat langsung dari genggamanmu.",
+        position: "center",
+        button: "Mulai Tur"
+      },
+      {
+        title: "Koki AI RM Segar",
+        description: "Bingung mau makan apa? Ngobrol dengan AI kami untuk mendapatkan rekomendasi menu terbaik.",
+        position: "target",
+        elementId: "tour-ai-chat",
+        rx: 32,
+        button: "Lanjut"
+      },
+      {
+        title: "Cari Menu",
+        description: "Gunakan kotak pencarian ini untuk menemukan menu favoritmu dengan cepat.",
+        position: "target",
+        elementId: "tour-search-bar",
+        rx: 20,
+        button: "Lanjut"
+      },
+      {
+        title: "Pilih Kategori",
+        description: "Geser dan pilih kategori untuk melihat menu yang lebih spesifik.",
+        position: "target",
+        elementId: "tour-categories",
+        rx: 0,
+        button: "Selesai"
+      }
+    ],
+    search: [
+      {
+        title: "Pencarian Menu",
+        description: "Ketik nama menu yang Anda cari di sini untuk menemukannya secara instan.",
+        position: "target",
+        elementId: "tour-search-bar",
+        rx: 20,
+        button: "Lanjut"
+      },
+      {
+        title: "Riwayat Pencarian",
+        description: "Pencarian terakhir Anda akan muncul di sini agar mudah diakses kembali.",
+        position: "target",
+        elementId: "tour-search-history",
+        rx: 24,
+        button: "Selesai"
+      }
+    ],
+    heart: [
+      {
+        title: "Menu Favorit",
+        description: "Semua menu yang Anda tandai sebagai favorit akan muncul di halaman ini.",
+        position: "center",
+        button: "Selesai"
+      }
+    ],
+    profile: [
+      {
+        title: "Profil Anda",
+        description: "Kelola akun Anda dan lihat riwayat pesanan yang pernah Anda buat.",
+        position: "target",
+        elementId: "tour-profile-info",
+        rx: 32,
+        button: "Lanjut"
+      },
+      {
+        title: "Riwayat Pesanan",
+        description: "Lihat daftar pesanan yang pernah Anda buat sebelumnya di sini.",
+        position: "target",
+        elementId: "tour-order-history",
+        rx: 20,
+        button: "Lanjut"
+      },
+      {
+        title: "Tentang RM Segar",
+        description: "Klik di sini untuk mengetahui lebih lanjut tentang sejarah dan visi kami.",
+        position: "target",
+        elementId: "tour-about-button",
+        rx: 20,
+        button: "Lanjut"
+      },
+      {
+        title: "Panduan Penggunaan",
+        description: "Jika Anda ingin melihat panduan ini lagi di masa mendatang, Anda bisa menekan tombol ini.",
+        position: "target",
+        elementId: "tour-guide-button",
+        rx: 20,
+        button: "Selesai"
+      }
+    ],
+    about: [
+      {
+        title: "Tentang Kami",
+        description: "Pelajari lebih dalam mengenai RM Segar, cita rasa autentik yang kami tawarkan.",
+        position: "center",
+        button: "Selesai"
+      }
+    ]
+  }), []);
   
   // AI Chat State
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -349,10 +589,6 @@ export default function App() {
     }
   };
 
-  const [isGameOpen, setIsGameOpen] = useState(false);
-  const [gameScore, setGameScore] = useState(0);
-  const [highScore, setHighScore] = useState(0);
-
   const containerRef = React.useRef<HTMLDivElement>(null);
   const chatEndRef = React.useRef<HTMLDivElement>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -384,15 +620,6 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const scrollToTop = () => {
-    if (isChatOpen) {
-      scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-    } else {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-  };
-
   useEffect(() => {
     if (isChatOpen) {
       scrollToBottom();
@@ -418,7 +645,25 @@ export default function App() {
         parts: [{ text: m.text }]
       }));
 
-      const resData = await chatWithPanda(message, history, menuListString);
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message,
+          history,
+          menuList: menuListString,
+          cart: JSON.stringify(cart.map(i => `${i.name} (${i.quantity}x)${i.option ? ' ['+i.option+']' : ''}${i.sweetness ? ' ['+i.sweetness+']' : ''}`)),
+          isGuest: !user
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Gagal menghubungi Master Panda');
+      }
+
+      const resData = await response.json();
       let fullText = resData.text || "";
       let currentCart = [...cart];
       let pendingWaUrl = "";
@@ -621,9 +866,13 @@ export default function App() {
   const startAIChat = () => {
     setIsChatOpen(true);
     if (chatMessages.length === 0) {
+      const greeting = user 
+        ? "Halo! Saya Master Panda, Koki AI RM Segar. Ada yang bisa saya bantu hari ini? 🐼 [OPSI: Pesan Makanan|Reservasi Meja]"
+        : "Halo! Saya Master Panda, Koki AI RM Segar. Silakan mampir atau login untuk akses fitur pesan antar & reservasi ya! Ada yang ingin ditanyakan seputar menu kami hari ini? 🐼🎋";
+      
       setChatMessages([{ 
         role: 'model', 
-        text: "Halo! Saya Master Panda, Koki AI RM Segar. Ada yang bisa saya bantu hari ini? 🐼 [OPSI: Pesan Makanan|Reservasi Meja]" 
+        text: greeting
       }]);
     }
   };
@@ -689,27 +938,43 @@ export default function App() {
 
       const element = document.getElementById(step.elementId);
       if (element) {
-        // Scroll element into view if needed
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Use instant scroll for accurate initial measurement
+        element.scrollIntoView({ behavior: 'auto', block: 'center' });
         
-        // Wait for scroll to finish before measuring
+        const rect = element.getBoundingClientRect();
+        setSpotlightRect({
+          x: rect.left,
+          y: rect.top,
+          width: rect.width,
+          height: rect.height,
+          rx: step.rx || 20
+        });
+
+        // Re-check after a short delay in case of layout shifts or images loading
         setTimeout(() => {
-          const rect = element.getBoundingClientRect();
+          const updatedRect = element.getBoundingClientRect();
           setSpotlightRect({
-            x: rect.left,
-            y: rect.top,
-            width: rect.width,
-            height: rect.height,
+            x: updatedRect.left,
+            y: updatedRect.top,
+            width: updatedRect.width,
+            height: updatedRect.height,
             rx: step.rx || 20
           });
-        }, 300);
+        }, 100);
       }
     };
 
-    updatePosition();
+    // Small delay to let the tab change render first if needed
+    const timeoutId = setTimeout(updatePosition, 50);
+
     window.addEventListener('resize', updatePosition);
-    return () => window.removeEventListener('resize', updatePosition);
-  }, [activeTour, tourStep]);
+    window.addEventListener('scroll', updatePosition, true); // Deep scroll tracking
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [activeTour, tourStep, activeTab, onboardingSteps]);
 
   // Pull to refresh logic using native touch events to avoid blocking scroll
   useEffect(() => {
@@ -837,21 +1102,25 @@ export default function App() {
   }, [highScore]);
 
   const clearChat = () => {
+    const greeting = user 
+      ? "Halo! Saya Master Panda, Koki AI RM Segar. Ada yang bisa saya bantu hari ini? 🐼 [OPSI: Pesan Makanan|Reservasi Meja]"
+      : "Halo! Saya Master Panda, Koki AI RM Segar. Silakan mampir atau login untuk akses fitur pesan antar & reservasi ya! Ada yang ingin ditanyakan seputar menu kami hari ini? 🐼🎋";
+
     setChatMessages([{ 
       role: 'model', 
-      text: "Halo! Saya Master Panda, Koki AI RM Segar. Ada yang bisa saya bantu hari ini? 🐼 [OPSI: Pesan Makanan|Reservasi Meja]" 
+      text: greeting
     }]);
     localStorage.removeItem('rm_segar_chat_history');
   };
 
   const categories = useMemo(() => {
     return [
-      { name: 'Semua', icon: <Utensils size={20} /> },
-      { name: 'Bakmie', icon: <Utensils size={20} /> },
-      { name: 'Kwetiao', icon: <Utensils size={20} /> },
-      { name: 'Capcai', icon: <Utensils size={20} /> },
-      { name: 'Nasi', icon: <Utensils size={20} /> },
       { name: 'Minuman', icon: <Coffee size={20} /> },
+      { name: 'Nasi', icon: <Utensils size={20} /> },
+      { name: 'Capcai', icon: <Utensils size={20} /> },
+      { name: 'Kwetiao', icon: <Utensils size={20} /> },
+      { name: 'Bakmie', icon: <Utensils size={20} /> },
+      { name: 'Semua', icon: <Utensils size={20} /> },
     ];
   }, []);
 
@@ -941,7 +1210,7 @@ export default function App() {
   const handleLogin = () => {
     if (loginMode === 'login') {
       if (loginPhone.length >= 10 && loginPassword.length >= 4) {
-        setUser({ phone: loginPhone });
+        setUser({ id: loginPhone, phone: loginPhone });
         setLoginPhone('');
         setLoginPassword('');
       }
@@ -964,7 +1233,7 @@ export default function App() {
       }
     } else if (loginMode === 'verify') {
       if (inputToken === resetToken) {
-        setUser({ phone: loginPhone });
+        setUser({ id: loginPhone, phone: loginPhone });
         setLoginMode('login');
         setLoginPhone('');
         setInputToken('');
@@ -975,32 +1244,36 @@ export default function App() {
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      setUser(null);
-      setLoginMode('login');
-      setLoginPhone('62');
-      setShowOrderHistory(false);
-      setShowAbout(false);
-      setActiveTab('home');
-    } catch (error) {
-      console.error("Logout Error:", error);
-    }
-  };
+  const navRef = useRef<HTMLDivElement>(null);
 
-  const handleTabChange = (tab: string) => {
-    if (activeTab === 'search' && tab === 'home' && searchQuery.trim()) {
-      setSearchHistory(prev => {
-        const newHistory = [searchQuery.trim(), ...prev.filter(h => h !== searchQuery.trim())].slice(0, 5);
-        return newHistory;
-      });
-      setSearchQuery('');
+  const handleNavPan = (_: any, info: any) => {
+    if (!navRef.current) return;
+    const rect = navRef.current.getBoundingClientRect();
+    const x = info.point.x - rect.left;
+    const width = rect.width;
+    
+    // Divide into 5 equal zones for each tab
+    const tabIndex = Math.max(0, Math.min(Math.floor((x / width) * 5), 4));
+    const tabIds = ['home', 'search', 'cart', 'heart', 'profile'] as const;
+    const targetTab = tabIds[tabIndex];
+
+    if (targetTab === 'cart') {
+      if (!isCartOpen && activeTab !== 'cart') {
+        handleTabChange('cart');
+        if (cartTimeoutRef.current) clearTimeout(cartTimeoutRef.current);
+        cartTimeoutRef.current = setTimeout(() => {
+          setIsCartOpen(true);
+          cartTimeoutRef.current = null;
+        }, 400);
+      }
+    } else {
+      if (isCartOpen) {
+        setIsCartOpen(false);
+      }
+      if (activeTab !== targetTab) {
+        handleTabChange(targetTab);
+      }
     }
-    setActiveTab(tab);
-    setShowOrderHistory(false);
-    setShowReservations(false);
-    setShowAbout(false);
   };
 
   const completeTour = () => {
@@ -1022,109 +1295,6 @@ export default function App() {
     }
   };
 
-  const onboardingSteps: Record<string, any[]> = {
-    home: [
-      {
-        title: "Selamat Datang!",
-        description: "Nikmati kemudahan memesan Chinese Food khas Kalimantan Barat langsung dari genggamanmu.",
-        position: "center",
-        button: "Mulai Tur"
-      },
-      {
-        title: "Koki AI RM Segar",
-        description: "Bingung mau makan apa? Ngobrol dengan AI kami untuk mendapatkan rekomendasi menu terbaik.",
-        position: "target",
-        elementId: "tour-ai-chat",
-        rx: 32,
-        button: "Lanjut"
-      },
-      {
-        title: "Cari Menu",
-        description: "Gunakan kotak pencarian ini untuk menemukan menu favoritmu dengan cepat.",
-        position: "target",
-        elementId: "tour-search-bar",
-        rx: 20,
-        button: "Lanjut"
-      },
-      {
-        title: "Pilih Kategori",
-        description: "Geser dan pilih kategori untuk melihat menu yang lebih spesifik.",
-        position: "target",
-        elementId: "tour-categories",
-        rx: 0,
-        button: "Selesai"
-      }
-    ],
-    search: [
-      {
-        title: "Pencarian Menu",
-        description: "Ketik nama menu yang Anda cari di sini untuk menemukannya secara instan.",
-        position: "target",
-        elementId: "tour-search-bar",
-        rx: 20,
-        button: "Lanjut"
-      },
-      {
-        title: "Riwayat Pencarian",
-        description: "Pencarian terakhir Anda akan muncul di sini agar mudah diakses kembali.",
-        position: "target",
-        elementId: "tour-search-history",
-        rx: 24,
-        button: "Selesai"
-      }
-    ],
-    heart: [
-      {
-        title: "Menu Favorit",
-        description: "Semua menu yang Anda tandai sebagai favorit akan muncul di halaman ini.",
-        position: "center",
-        button: "Selesai"
-      }
-    ],
-    profile: [
-      {
-        title: "Profil Anda",
-        description: "Kelola akun Anda dan lihat riwayat pesanan yang pernah Anda buat.",
-        position: "target",
-        elementId: "tour-profile-info",
-        rx: 32,
-        button: "Lanjut"
-      },
-      {
-        title: "Riwayat Pesanan",
-        description: "Lihat daftar pesanan yang pernah Anda buat sebelumnya di sini.",
-        position: "target",
-        elementId: "tour-order-history",
-        rx: 20,
-        button: "Lanjut"
-      },
-      {
-        title: "Tentang RM Segar",
-        description: "Klik di sini untuk mengetahui lebih lanjut tentang sejarah dan visi kami.",
-        position: "target",
-        elementId: "tour-about-button",
-        rx: 20,
-        button: "Lanjut"
-      },
-      {
-        title: "Panduan Penggunaan",
-        description: "Jika Anda ingin melihat panduan ini lagi di masa mendatang, Anda bisa menekan tombol ini.",
-        position: "target",
-        elementId: "tour-guide-button",
-        rx: 20,
-        button: "Selesai"
-      }
-    ],
-    about: [
-      {
-        title: "Tentang Kami",
-        description: "Pelajari lebih dalam mengenai RM Segar, cita rasa autentik yang kami tawarkan.",
-        position: "center",
-        button: "Selesai"
-      }
-    ]
-  };
-
   const renderOnboarding = () => {
     if (!activeTour || !spotlightRect) return null;
     const steps = onboardingSteps[activeTour];
@@ -1133,7 +1303,7 @@ export default function App() {
     const isTop = spotlightRect.y > window.innerHeight / 2;
 
     return (
-      <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center pointer-events-none">
+      <div className="fixed inset-0 z-[1000] flex flex-col items-center justify-center pointer-events-none">
         <svg className="absolute inset-0 w-full h-full pointer-events-none">
           <defs>
             <mask id="spotlight-mask">
@@ -1164,7 +1334,7 @@ export default function App() {
               borderRadius: spotlightRect.rx,
             }}
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            className="absolute border-4 border-orange-500 z-[101] pointer-events-none"
+            className="absolute border-4 border-orange-500 z-[1001] pointer-events-none"
           >
             <motion.div 
               animate={{ opacity: [0, 0.5, 0], scale: [1, 1.05, 1] }}
@@ -1174,7 +1344,7 @@ export default function App() {
           </motion.div>
         )}
 
-        <div className="absolute top-8 right-8 z-[105] pointer-events-auto">
+        <div className="absolute top-8 right-8 z-[1005] pointer-events-auto">
           <button 
             onClick={completeTour}
             className="text-white/70 text-sm font-bold hover:text-white"
@@ -1186,11 +1356,11 @@ export default function App() {
         <motion.div
           layout
           animate={{
-            top: isTop ? spotlightRect.y - 20 : spotlightRect.y + spotlightRect.height + 20,
+            top: isTop ? Math.max(80, spotlightRect.y - 20) : Math.min(window.innerHeight - 80, spotlightRect.y + spotlightRect.height + 20),
             y: isTop ? '-100%' : '0%',
           }}
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
-          className="absolute left-6 right-6 bg-white rounded-[32px] p-8 shadow-2xl flex flex-col items-center text-center z-[105] pointer-events-auto"
+          className="absolute left-6 right-6 bg-white rounded-[32px] p-8 shadow-2xl flex flex-col items-center text-center z-[1005] pointer-events-auto"
         >
           {step.position !== 'center' && (
             <motion.div 
@@ -1392,13 +1562,15 @@ export default function App() {
 
     setCart([]);
     setIsCartOpen(false);
+    setActiveTab(prevActiveTab);
     setIsScheduling(false);
     setShowSuccess(true);
     setTimeout(() => setShowSuccess(false), 3000);
   };
 
-  const renderHome = () => (
+  const renderHome = (key: string) => (
     <motion.div 
+      key={key}
       initial={{ opacity: 0 }} 
       animate={{ opacity: 1 }} 
       exit={{ opacity: 0 }}
@@ -1439,7 +1611,7 @@ export default function App() {
       </section>
 
       {/* Categories */}
-      <section className="px-6 overflow-x-auto no-scrollbar flex gap-4 md:gap-0 md:justify-between py-4" id="tour-categories">
+      <section ref={categoryScrollRef} className="px-6 overflow-x-auto no-scrollbar flex gap-4 md:gap-0 md:justify-between py-4" id="tour-categories">
         {categories.map((cat) => (
           <button
             key={cat.name}
@@ -1545,11 +1717,13 @@ export default function App() {
           ))}
         </div>
       </section>
+      
     </motion.div>
   );
 
-  const renderSearch = () => (
+  const renderSearch = (key: string) => (
     <motion.div 
+      key={key}
       initial={{ opacity: 0 }} 
       animate={{ opacity: 1 }} 
       exit={{ opacity: 0 }}
@@ -1639,8 +1813,9 @@ export default function App() {
     </motion.div>
   );
 
-  const renderFavorites = () => (
+  const renderFavorites = (key: string) => (
     <motion.div 
+      key={key}
       initial={{ opacity: 0 }} 
       animate={{ opacity: 1 }} 
       exit={{ opacity: 0 }}
@@ -1714,9 +1889,13 @@ export default function App() {
 
               {/* Game Area */}
               <div className="flex-grow bg-white rounded-[40px] relative overflow-hidden shadow-2xl border-4 border-white/10">
-                <PandaNoodleGame onGameOver={(score) => {
-                  if (score > highScore) setHighScore(score);
-                }} />
+                <PandaNoodleGame 
+                  isGameOpen={isGameOpen}
+                  setIsGameOpen={setIsGameOpen}
+                  onGameOver={(score) => {
+                    if (score > highScore) setHighScore(score);
+                  }} 
+                />
               </div>
 
               <div className="flex justify-between items-center px-4 py-2">
@@ -1939,6 +2118,14 @@ export default function App() {
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
+            drag="y"
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={{ top: 0, bottom: 0.8 }}
+            onDragEnd={(_, info) => {
+              if (info.offset.y > 100 || info.velocity.y > 500) {
+                setIsScheduling(false);
+              }
+            }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
             className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[90vh] bg-white rounded-t-[48px] shadow-2xl z-[120] flex flex-col"
           >
@@ -2275,8 +2462,9 @@ export default function App() {
       )}
     </AnimatePresence>
   );
-  const renderProfile = () => (
+  const renderProfile = (key: string) => (
     <motion.div 
+      key={key}
       initial={{ opacity: 0 }} 
       animate={{ opacity: 1 }} 
       exit={{ opacity: 0 }}
@@ -2410,31 +2598,10 @@ export default function App() {
             <h2 className="text-xl font-bold text-stone-900">Tentang RM Segar</h2>
           </div>
 
-          <div className="bg-white p-6 rounded-[32px] shadow-sm border border-stone-50 space-y-6">
-            <div className="space-y-4">
-              <div className="flex gap-4">
-                <div className="w-12 h-12 bg-orange-50 text-orange-500 rounded-2xl flex items-center justify-center flex-shrink-0">
-                  <MapPin size={24} />
-                </div>
-                <div>
-                  <h3 className="font-bold text-stone-900">Lokasi Kami</h3>
-                  <p className="text-sm text-stone-500 leading-relaxed mb-4">
-                    Terletak strategis di Sambas, Kalimantan Barat untuk melayani pecinta Chinese Food.
-                  </p>
-                  <div className="w-full h-48 rounded-2xl overflow-hidden border border-stone-100 shadow-inner">
-                    <iframe 
-                      width="100%" 
-                      height="100%" 
-                      frameBorder="0" 
-                      scrolling="no" 
-                      marginHeight={0} 
-                      marginWidth={0} 
-                      src="https://maps.google.com/maps?q=Rumah%20Makan%20Segar%20Sambas%20Kalimantan%20Barat&t=&z=15&ie=UTF8&iwloc=&output=embed"
-                    />
-                  </div>
-                </div>
-              </div>
+          <div className="space-y-6">
+            <LocationSection />
 
+            <div className="bg-white p-6 rounded-[32px] shadow-sm border border-stone-50 space-y-6">
               <div className="flex gap-4">
                 <div className="w-12 h-12 bg-blue-50 text-blue-500 rounded-2xl flex items-center justify-center flex-shrink-0">
                   <Utensils size={24} />
@@ -2954,58 +3121,96 @@ export default function App() {
 
       {/* Main Content Area */}
       <AnimatePresence mode="wait">
-        {activeTab === 'home' && renderHome()}
-        {activeTab === 'search' && renderSearch()}
-        {activeTab === 'heart' && renderFavorites()}
-        {activeTab === 'profile' && renderProfile()}
+        {(activeTab === 'home' || (activeTab === 'cart' && prevActiveTab === 'home')) && renderHome('home-view')}
+        {(activeTab === 'search' || (activeTab === 'cart' && prevActiveTab === 'search')) && renderSearch('search-view')}
+        {(activeTab === 'heart' || (activeTab === 'cart' && prevActiveTab === 'heart')) && renderFavorites('favorites-view')}
+        {(activeTab === 'profile' || (activeTab === 'cart' && prevActiveTab === 'profile')) && renderProfile('profile-view')}
       </AnimatePresence>
 
       </motion.div>
 
       {/* Bottom Navigation */}
-      <div className="fixed bottom-0 left-0 right-0 flex justify-center z-40 pointer-events-none">
-        <nav className="w-full max-w-5xl bg-white border-t border-stone-100 px-8 py-4 flex justify-between items-center rounded-t-[32px] shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pointer-events-auto">
-          <button 
-            onClick={() => handleTabChange('home')}
-            className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'home' ? 'text-orange-500' : 'text-stone-400'}`}
-          >
-            <Home size={24} />
-            <span className="text-[10px] font-bold">Menu</span>
-          </button>
-          <button 
-            onClick={() => handleTabChange('search')}
-            className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'search' ? 'text-orange-500' : 'text-stone-400'}`}
-          >
-            <Search size={24} />
-            <span className="text-[10px] font-bold">Cari</span>
-          </button>
-          <button 
-            onClick={() => setIsCartOpen(true)}
-            className="relative -top-8 w-16 h-16 bg-orange-500 text-white rounded-full flex items-center justify-center shadow-xl shadow-orange-200 border-4 border-white transition-transform active:scale-90"
-          >
-            <ShoppingBag size={28} />
-            {totalItems > 0 && (
-              <span className="absolute -top-1 -right-1 w-6 h-6 bg-stone-900 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-white">
-                {totalItems}
-              </span>
-            )}
-          </button>
-          <button 
-            onClick={() => handleTabChange('heart')}
-            className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'heart' ? 'text-orange-500' : 'text-stone-400'}`}
-          >
-            <Heart size={24} />
-            <span className="text-[10px] font-bold">Favorit</span>
-          </button>
-          <button 
-            onClick={() => handleTabChange('profile')}
-            className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'profile' ? 'text-orange-500' : 'text-stone-400'}`}
-          >
-            <User size={24} />
-            <span className="text-[10px] font-bold">Profil</span>
-          </button>
-        </nav>
-      </div>
+      {!isChatOpen && (
+        <div className="fixed bottom-0 left-0 right-0 flex justify-center z-[100] pointer-events-none">
+          <div className="w-full max-w-5xl relative pointer-events-auto">
+            <motion.nav 
+              ref={navRef}
+              onPan={handleNavPan}
+              className="bg-white/60 backdrop-blur-xl border-t border-white/20 px-6 pt-3 pb-5 flex justify-between items-center rounded-t-[32px] shadow-[0_-10px_40px_rgba(0,0,0,0.05)] relative touch-none"
+            >
+              {[
+                { id: 'home', icon: Home, label: 'Menu' },
+                { id: 'search', icon: Search, label: 'Cari' },
+                { id: 'cart', icon: ShoppingBag, label: 'Keranjang' },
+                { id: 'heart', icon: Heart, label: 'Favorit' },
+                { id: 'profile', icon: User, label: 'Profil' }
+              ].map((tab) => {
+                const isActive = activeTab === tab.id;
+                const Icon = tab.icon;
+
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      if (tab.id === 'cart') {
+                        // Already handled by checking current activeTab
+                        if (activeTab !== 'cart') {
+                          handleTabChange('cart');
+                          if (cartTimeoutRef.current) clearTimeout(cartTimeoutRef.current);
+                          cartTimeoutRef.current = setTimeout(() => {
+                            setIsCartOpen(true);
+                            cartTimeoutRef.current = null;
+                          }, 400);
+                        } else if (!isCartOpen) {
+                          // Handle case where it was closed but tab still active (should not happen normally)
+                          setIsCartOpen(true);
+                        }
+                      } else {
+                        handleTabChange(tab.id as any);
+                      }
+                    }}
+                    className="relative flex-1 flex flex-col items-center justify-center outline-none transition-all duration-300 group h-12"
+                  >
+                    <AnimatePresence>
+                      {isActive && (
+                        <motion.div
+                          layoutId="nav-selection-aura"
+                          className="absolute -top-10 w-16 h-16 bg-orange-500 rounded-full flex items-center justify-center border-4 border-white shadow-[0_15px_30px_rgba(249,115,22,0.4)] z-20"
+                          transition={{ type: "spring", bounce: 0.25, duration: 0.6 }}
+                        >
+                          <Icon size={28} className="text-white" />
+                          {tab.id === 'cart' && totalItems > 0 && (
+                            <span className="absolute -top-1 -right-1 w-6 h-6 bg-stone-900 text-white text-[10px] font-black rounded-full flex items-center justify-center border-2 border-white">
+                              {totalItems}
+                            </span>
+                          )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                    
+                    <div className={`relative z-10 flex flex-col items-center transition-all duration-300 ${isActive ? 'opacity-0 scale-50' : 'opacity-100 translate-y-0'}`}>
+                      <Icon 
+                        size={20} 
+                        className={`mb-0.5 ${isActive ? 'text-orange-500' : 'text-stone-400 group-hover:text-stone-600'}`} 
+                      />
+                      <span className={`text-[9px] font-bold ${isActive ? 'text-orange-500' : 'text-stone-400'}`}>
+                        {tab.label}
+                      </span>
+                      {tab.id === 'cart' && totalItems > 0 && !isActive && (
+                        <span className="absolute -top-2 -right-2 w-4 h-4 bg-orange-500 text-white text-[8px] font-black rounded-full flex items-center justify-center border border-white">
+                          {totalItems}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Label removed as per request */}
+                  </button>
+                );
+              })}
+            </motion.nav>
+          </div>
+        </div>
+      )}
 
       {/* Cart Drawer */}
       <AnimatePresence>
@@ -3015,22 +3220,37 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setIsCartOpen(false)}
-              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50"
+              onClick={() => {
+                setIsCartOpen(false);
+                setActiveTab(prevActiveTab);
+              }}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[150] pointer-events-auto"
             />
             <motion.div 
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
+              drag="y"
+              dragConstraints={{ top: 0, bottom: 0 }}
+              dragElastic={{ top: 0, bottom: 0.8 }}
+              onDragEnd={(_, info) => {
+                if (info.offset.y > 100 || info.velocity.y > 500) {
+                  setIsCartOpen(false);
+                  setActiveTab(prevActiveTab);
+                }
+              }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[90vh] bg-white rounded-t-[40px] shadow-2xl z-50 flex flex-col"
+              className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[90vh] bg-white rounded-t-[40px] shadow-2xl z-[200] flex flex-col"
             >
               <div className="w-12 h-1.5 bg-stone-200 rounded-full mx-auto mt-4 mb-6 flex-shrink-0" />
               
               <div className="px-8 flex items-center justify-between mb-4 flex-shrink-0">
                 <h2 className="text-2xl font-black text-stone-900 tracking-tight">Pesanan Anda</h2>
                 <button 
-                  onClick={() => setIsCartOpen(false)}
+                  onClick={() => {
+                  setIsCartOpen(false);
+                  setActiveTab(prevActiveTab);
+                }}
                   className="w-10 h-10 bg-stone-50 rounded-xl flex items-center justify-center text-stone-400 active:bg-stone-100"
                 >
                   <X size={20} />
@@ -3048,93 +3268,103 @@ export default function App() {
                   </div>
                 ) : (
                   <>
-                      <div className="space-y-4">
-                        {cart.map((item) => (
-                          <div key={`${item.id}-${item.option || 'none'}-${item.sweetness || 'none'}`} className="relative overflow-hidden rounded-3xl group">
-                            {/* Swipe Background (Delete Button) */}
-                            <div className="absolute inset-0 bg-red-500 flex items-center justify-end">
-                              <button 
-                                onClick={() => clearItemFromCart(item.id, item.option, item.sweetness)}
-                                className="h-full px-8 text-white active:bg-blue-600 transition-colors flex flex-col items-center justify-center gap-1 group/delete-main"
-                              >
-                                <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center group-active/delete-main:scale-90 transition-transform">
-                                  <Trash2 size={24} />
-                                </div>
-                                <span className="text-[10px] font-black uppercase tracking-widest">Hapus</span>
-                              </button>
-                            </div>
-
-                            {/* Item Content */}
+                      <AnimatePresence initial={false}>
+                        <div className="space-y-4">
+                          {cart.map((item) => (
                             <motion.div 
-                              drag="x"
-                              dragConstraints={{ left: -100, right: 0 }}
-                              dragElastic={0.05}
-                              className="relative bg-white flex gap-4 items-center p-4 cursor-grab active:cursor-grabbing border border-stone-100 rounded-[inherit]"
+                              key={`${item.id}-${item.option || 'none'}-${item.sweetness || 'none'}`}
+                              layout
+                              initial={{ opacity: 0, height: 0, marginBottom: 0 }}
+                              animate={{ opacity: 1, height: 'auto', marginBottom: 16 }}
+                              exit={{ opacity: 0, height: 0, marginBottom: 0, x: -100 }}
+                              transition={{ type: "spring", bounce: 0, duration: 0.4 }}
+                              className="relative overflow-visible rounded-3xl group"
                             >
-                              <div className="w-20 h-20 bg-stone-50 rounded-2xl flex items-center justify-center text-3xl shadow-sm overflow-hidden flex-shrink-0">
-                                <MenuIcon item={item} size={32} />
+                              {/* Swipe Background (Delete Button) */}
+                              <div className="absolute inset-y-0 right-0 w-[110px] bg-red-500 rounded-r-3xl flex items-center justify-center overflow-hidden">
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    clearItemFromCart(item.id, item.option, item.sweetness);
+                                  }}
+                                  className="w-full h-full text-white flex flex-col items-center justify-center gap-1 active:bg-red-600 transition-colors"
+                                >
+                                  <Trash2 size={24} />
+                                  <span className="text-[9px] font-black uppercase tracking-widest">Hapus</span>
+                                </button>
                               </div>
-                              <div className="flex-grow">
-                                <div className="flex justify-between items-start">
-                                  <div>
-                                    <h4 className="font-bold text-stone-900 leading-tight">{item.name}</h4>
-                                    <div className="flex flex-wrap gap-1 mt-1">
-                                      <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest">{item.category}</p>
-                                      {item.sweetness && (
-                                        <>
-                                          <span className="text-[10px] text-stone-300">•</span>
-                                          <p className="text-[10px] text-orange-500 font-bold uppercase tracking-widest">{item.sweetness}</p>
-                                        </>
-                                      )}
-                                    </div>
-                                  </div>
-                                  <button 
-                                    onClick={() => setNoteModalItem({ id: item.id, option: item.option, sweetness: item.sweetness, note: item.note || '' })}
-                                    className={`p-2 rounded-xl transition-colors ${item.note ? 'text-orange-500 bg-orange-50' : 'text-stone-300 hover:text-orange-500 hover:bg-orange-50'}`}
-                                  >
-                                    <MessageSquare size={16} />
-                                  </button>
+
+                              {/* Item Content */}
+                              <motion.div 
+                                drag="x"
+                                dragConstraints={{ left: -110, right: 0 }}
+                                dragElastic={0.02}
+                                dragSnapToOrigin={false}
+                                className="relative bg-white flex gap-4 items-center p-4 cursor-grab active:cursor-grabbing border border-stone-100 rounded-[inherit] shadow-sm z-10"
+                                whileTap={{ x: -5, cursor: 'grabbing' }}
+                              >
+                                <div className="w-16 h-16 bg-stone-50 rounded-2xl flex items-center justify-center text-2xl overflow-hidden flex-shrink-0">
+                                  <MenuIcon item={item} size={24} />
                                 </div>
                                 
-                                <div className="flex items-center justify-between mt-3">
-                                  <div className="flex items-center gap-3 bg-stone-50 px-2 py-1.5 rounded-xl border border-stone-100 shadow-sm">
+                                <div className="flex-grow min-w-0">
+                                  <div className="flex justify-between items-start">
+                                    <h4 className="font-bold text-stone-900 leading-tight truncate">{item.name}</h4>
                                     <button 
-                                      onClick={() => removeFromCart(item.id, item.option, item.sweetness)}
-                                      className="w-7 h-7 rounded-lg bg-white flex items-center justify-center text-stone-400 active:bg-stone-100 border border-stone-100"
+                                      onClick={() => clearItemFromCart(item.id, item.option, item.sweetness)}
+                                      className="text-stone-300 hover:text-red-500 transition-colors p-1"
                                     >
-                                      <Minus size={14} />
-                                    </button>
-                                    <span className="font-black text-stone-900 text-xs">{item.quantity}</span>
-                                    <button 
-                                      onClick={() => addToCart(item, item.option, item.sweetness)}
-                                      className="w-7 h-7 rounded-lg bg-orange-500 flex items-center justify-center text-white active:bg-orange-600"
-                                    >
-                                      <Plus size={14} />
+                                      <Trash2 size={16} />
                                     </button>
                                   </div>
+                                  
+                                  <div className="flex flex-wrap gap-x-2 gap-y-1 mt-1">
+                                    <p className="text-[10px] text-stone-400 font-bold uppercase tracking-widest">{item.category}</p>
+                                    {item.option && (
+                                      <span className="text-[10px] border border-orange-100 text-orange-500 px-1.5 rounded-md font-black uppercase tracking-tighter">
+                                        {item.option}
+                                      </span>
+                                    )}
+                                    {item.sweetness && (
+                                      <span className="text-[10px] border border-blue-100 text-blue-500 px-1.5 rounded-md font-black uppercase tracking-tighter">
+                                        {item.sweetness}
+                                      </span>
+                                    )}
+                                  </div>
 
-                                  {item.option && (
+                                  <div className="flex items-center justify-between mt-3">
+                                    <div className="flex items-center gap-3 bg-stone-50 p-1 rounded-xl border border-stone-100">
+                                      <button 
+                                        onClick={() => removeFromCart(item.id, item.option, item.sweetness)}
+                                        className="w-8 h-8 rounded-lg bg-white flex items-center justify-center text-stone-400 active:bg-stone-100 border border-stone-100 shadow-sm"
+                                      >
+                                        <Minus size={14} />
+                                      </button>
+                                      <span className="font-black text-stone-900 text-sm w-4 text-center">{item.quantity}</span>
+                                      <button 
+                                        onClick={() => addToCart(item, item.option, item.sweetness)}
+                                        className="w-8 h-8 rounded-lg bg-orange-500 flex items-center justify-center text-white active:bg-orange-600 shadow-sm"
+                                      >
+                                        <Plus size={14} />
+                                      </button>
+                                    </div>
+
                                     <button 
-                                      onClick={() => toggleItemOption(item.id, item.option, item.sweetness)}
-                                      className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter transition-all active:scale-95 ${
-                                      item.option === 'Es' ? 'bg-blue-100 text-blue-600 hover:bg-blue-200' : 'bg-orange-100 text-orange-600 hover:bg-orange-200'
-                                    }`}>
-                                      {item.option} 🔄
+                                      onClick={() => setNoteModalItem({ id: item.id, option: item.option, sweetness: item.sweetness, note: item.note || '' })}
+                                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all ${
+                                        item.note ? 'text-orange-600 bg-orange-50' : 'text-stone-400 bg-stone-50 hover:bg-stone-100'
+                                      }`}
+                                    >
+                                      <MessageSquare size={12} />
+                                      {item.note ? 'Lihat Catatan' : 'Tambah Catatan'}
                                     </button>
-                                  )}
+                                  </div>
                                 </div>
-
-                                {item.note && (
-                                  <div className="mt-3 p-2 bg-orange-50 rounded-xl border border-orange-100 flex items-start gap-2">
-                                    <MessageSquare size={12} className="text-orange-500 mt-0.5" />
-                                    <p className="text-[10px] text-orange-600 font-medium italic">"{item.note}"</p>
-                                  </div>
-                                )}
-                              </div>
+                              </motion.div>
                             </motion.div>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </div>
+                      </AnimatePresence>
 
                     <div className="space-y-4 px-2 border-t border-stone-100 pt-8">
                       <div className="flex justify-between items-center text-stone-500">
@@ -3207,18 +3437,15 @@ export default function App() {
                     <div className="pt-4 space-y-4">
                       <button 
                         onClick={sendToWhatsApp}
-                        className="group w-full bg-[#25D366] text-white py-6 rounded-[32px] font-black text-sm uppercase tracking-widest flex items-center justify-center gap-3 shadow-2xl shadow-green-200 active:scale-[0.97] transition-all"
+                        className="group w-full bg-[#25D366] text-white py-6 rounded-[32px] font-black text-sm uppercase tracking-[0.2em] flex items-center justify-center gap-3 shadow-2xl shadow-green-100 active:scale-[0.97] hover:scale-[1.02] transition-all"
                       >
-                        <div className="flex flex-col items-center leading-none">
-                          <div className="flex items-center gap-2 mb-1">
-                            <MessageCircle size={20} fill="currentColor" className="text-white/40" />
-                            <span>Kirim ke WhatsApp</span>
-                          </div>
-                          <span className="text-[10px] uppercase font-bold tracking-widest opacity-60">Selesaikan Pembayaran</span>
+                        <div className="flex items-center gap-3">
+                          <MessageCircle size={20} fill="currentColor" className="text-white/40" />
+                          <span>Checkout via WhatsApp</span>
                         </div>
                       </button>
 
-                      <div className="relative flex items-center justify-center py-2">
+                      <div className="relative flex items-center justify-center py-2 opacity-50">
                         <div className="absolute inset-0 flex items-center" aria-hidden="true">
                           <div className="w-full border-t border-stone-100/50"></div>
                         </div>
@@ -3230,6 +3457,7 @@ export default function App() {
                       <button 
                         onClick={() => {
                           setIsCartOpen(false);
+                          setActiveTab(prevActiveTab);
                           setIsScheduling(true);
                         }}
                         className="w-full bg-stone-50 text-stone-900 py-4 rounded-[24px] font-bold text-xs flex items-center justify-center gap-3 border border-stone-100 active:bg-stone-100 transition-all font-sans"
@@ -3262,6 +3490,14 @@ export default function App() {
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
+              drag="y"
+              dragConstraints={{ top: 0, bottom: 0 }}
+              dragElastic={{ top: 0, bottom: 0.8 }}
+              onDragEnd={(_, info) => {
+                if (info.offset.y > 100 || info.velocity.y > 500) {
+                  setIsChatOpen(false);
+                }
+              }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
               className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[92vh] bg-[#FDFEFE] rounded-t-[48px] shadow-2xl z-[80] flex flex-col overflow-hidden"
             >
@@ -3430,8 +3666,13 @@ export default function App() {
                               target="_blank" 
                               rel="noopener noreferrer"
                               onClick={() => {
-                                // Add a small delay then scroll to top as visual feedback
-                                setTimeout(scrollToTop, 500);
+                                // Explicit scroll to top animation
+                                setTimeout(() => {
+                                  scrollToTop();
+                                  // Also scroll main container to top
+                                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                                  containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                                }, 500);
                               }}
                               className="w-full flex items-center justify-center gap-3 py-5 bg-[#25D366] text-white rounded-2xl text-sm font-black uppercase tracking-wider hover:scale-[1.02] transition-all shadow-xl shadow-green-500/10 active:scale-95"
                             >
@@ -3443,7 +3684,7 @@ export default function App() {
                       </div>
 
                       {/* Render Options if any */}
-                      {options.length > 0 && msg.role === 'model' && (
+                      {options.length > 0 && msg.role === 'model' && user && (
                         <div className="mt-3 flex flex-wrap gap-2 max-w-[90%]">
                           {options.map((opt, oIdx) => (
                             <button
@@ -3505,20 +3746,6 @@ export default function App() {
                   </motion.div>
                 )}
 
-                {/* Suggestions Section */}
-                {chatMessages.length <= 2 && !isAIThinking && (
-                  <div className="pt-4 flex flex-wrap gap-2.5">
-                    {["📜 Lihat Menu", "🍜 Menu jagoan?", "🥢 Bakmie/Kwetiao", "🥤 Minuman segar", "🥡 Rekomendasi bungkus", "🗓️ Reservasi Meja"].map(suggestion => (
-                      <button 
-                        key={suggestion}
-                        onClick={() => handleSendMessage(undefined, suggestion.substring(suggestion.indexOf(' ') + 1))}
-                        className="px-5 py-2.5 bg-stone-50 border border-stone-100 rounded-2xl text-[13px] font-bold text-stone-600 shadow-sm active:scale-95 transition-all hover:bg-stone-900 hover:text-white"
-                      >
-                        {suggestion}
-                      </button>
-                    ))}
-                  </div>
-                )}
                 <div ref={chatEndRef} />
               </div>
 
@@ -3716,6 +3943,14 @@ export default function App() {
                 initial={{ y: '100%' }}
                 animate={{ y: 0 }}
                 exit={{ y: '100%' }}
+                drag="y"
+                dragConstraints={{ top: 0, bottom: 0 }}
+                dragElastic={{ top: 0, bottom: 0.8 }}
+                onDragEnd={(_, info) => {
+                  if (info.offset.y > 100 || info.velocity.y > 500) {
+                    setShowTutorial(false);
+                  }
+                }}
                 transition={{ type: 'spring', damping: 25, stiffness: 200 }}
                 className="fixed inset-x-0 bottom-0 md:left-1/2 md:-translate-x-1/2 md:max-w-2xl h-[85vh] bg-white rounded-t-[40px] shadow-2xl z-[300] flex flex-col overflow-hidden"
               >
@@ -3807,7 +4042,15 @@ interface GameObject {
   speed: number;
 }
 
-const PandaNoodleGame = ({ onGameOver }: { onGameOver: (score: number) => void }) => {
+const PandaNoodleGame = ({ 
+  isGameOpen, 
+  setIsGameOpen, 
+  onGameOver 
+}: { 
+  isGameOpen: boolean;
+  setIsGameOpen: (open: boolean) => void;
+  onGameOver: (score: number) => void 
+}) => {
   const [score, setScore] = useState(0);
   const [pandaX, setPandaX] = useState(50);
   const [objects, setObjects] = useState<GameObject[]>([]);
@@ -4004,9 +4247,15 @@ const PandaNoodleGame = ({ onGameOver }: { onGameOver: (score: number) => void }
           <p className="text-stone-500 text-xs px-12 mb-8 font-medium">Tangkap mie 🍜 sebanyak mungkin.<br/>Hindari BOMB 💣 dan jangan biarkan mie jatuh!</p>
           <button 
             onClick={startGame}
-            className="px-10 py-4 bg-stone-900 text-white rounded-3xl font-black shadow-lg active:scale-95 transition-all"
+            className="mb-4 px-10 py-4 bg-stone-900 text-white rounded-3xl font-black shadow-lg active:scale-95 transition-all"
           >
             MULAI BERMAIN
+          </button>
+          <button 
+            onClick={() => setIsGameOpen(false)}
+            className="text-stone-400 text-[10px] font-black uppercase tracking-widest hover:text-stone-600 transition-colors"
+          >
+            Kembali ke Profil
           </button>
         </div>
       )}
@@ -4015,13 +4264,21 @@ const PandaNoodleGame = ({ onGameOver }: { onGameOver: (score: number) => void }
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-8 text-center bg-white/60 backdrop-blur-lg">
           <p className="text-[10px] font-black text-orange-500 uppercase tracking-widest mb-2">Game Over</p>
           <h3 className="text-4xl font-black text-stone-900 mb-6">SKOR: {score}</h3>
-          <button 
-            onClick={startGame}
-            className="mb-4 px-10 py-4 bg-orange-500 text-white rounded-3xl font-black shadow-lg active:scale-95 transition-all"
-          >
-            MAINKAN LAGI
-          </button>
-          <p className="text-xs text-stone-400 font-bold">Hebat! Sembari nunggu, panda kita satu ini makin kenyang.</p>
+          <div className="flex flex-col gap-3 w-full items-center">
+            <button 
+              onClick={startGame}
+              className="w-full max-w-[200px] py-4 bg-orange-500 text-white rounded-3xl font-black shadow-lg shadow-orange-100 active:scale-95 transition-all"
+            >
+              MAINKAN LAGI
+            </button>
+            <button 
+              onClick={() => setIsGameOpen(false)}
+              className="w-full max-w-[200px] py-4 bg-stone-900 text-white rounded-3xl font-black shadow-lg active:scale-95 transition-all"
+            >
+              TUTUP GAME
+            </button>
+          </div>
+          <p className="text-xs text-stone-400 font-bold mt-8">Hebat! Sembari nunggu, panda kita satu ini makin kenyang.</p>
         </div>
       )}
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { X, Image as ImageIcon, Loader2, Camera } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface QRScannerProps {
   onScanSuccess: (decodedText: string) => void;
@@ -16,76 +16,104 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onScanSuccess, onScanError
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [isCameraReady, setIsCameraReady] = useState(false);
 
+  const [isCameraStarted, setIsCameraStarted] = useState(false);
+
   useEffect(() => {
     const html5QrCode = new Html5Qrcode("qr-reader");
     html5QrCodeRef.current = html5QrCode;
 
-      const startCamera = async () => {
-        console.log("Attempting to start camera...");
-        try {
-          await html5QrCode.start(
-            { facingMode: "environment" },
-            {
-              fps: 15,
-              qrbox: { width: 250, height: 250 },
-              aspectRatio: 1.0
-            },
-            (decodedText) => {
-              console.log("QR Code scanned successfully:", decodedText);
-              onScanSuccess(decodedText);
-              stopCamera();
-            },
-            (errorMessage) => {
-              // Only log real errors, not frequent scan failures
-            }
-          );
-          console.log("Camera started successfully");
-          setIsCameraReady(true);
-          setErrorStatus(null);
-        } catch (err: any) {
-          console.error("Critical error starting camera:", err);
-          const name = err?.name || "";
-          const message = err?.message || "";
-          
-          if (name === "NotAllowedError" || message.toLowerCase().includes("permission denied")) {
-            setErrorStatus("Izin kamera ditolak. Silakan klik ikon gembok (🔒) di sebelah alamat browser (URL bar) dan aktifkan 'Kamera', lalu segarkan halaman ini.");
-          } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
-            setErrorStatus("Kamera tidak ditemukan. Pastikan perangkat memiliki kamera belakang dan berikan izin di pengaturan Chrome/Browser Anda.");
-          } else if (name === "NotReadableError" || name === "TrackStartError") {
-            setErrorStatus("Kamera terkunci oleh aplikasi lain. Silakan tutup aplikasi kamera atau tab lain yang menggunakan kamera.");
-          } else if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-            setErrorStatus("Kamera memerlukan koneksi aman (HTTPS). Pastikan Anda menggunakan link yang diawali https://");
-          } else {
-            setErrorStatus("Gagal mengakses kamera. Error: " + (name || message || "Unknown"));
-          }
-        }
-      };
-
-    const stopCamera = async () => {
-      if (html5QrCodeRef.current) {
-        try {
-          if (html5QrCodeRef.current.isScanning) {
-            await html5QrCodeRef.current.stop();
-          }
-          await html5QrCodeRef.current.clear();
-        } catch (err) {
-          console.error("Failed to clean up scanner", err);
-        }
-      }
-    };
-
-    // Small delay to ensure the DOM element is ready
-    const timer = setTimeout(() => {
-      if (html5QrCodeRef.current) {
-        startCamera();
-      }
-    }, 300);
-
     return () => {
-      clearTimeout(timer);
       stopCamera();
     };
   }, [onScanSuccess]);
+
+  const startCamera = async () => {
+    console.log("Attempting to start camera...");
+    setErrorStatus(null);
+    setIsProcessing(false);
+    
+    try {
+      // Try to get cameras first
+      const devices = await Html5Qrcode.getCameras();
+      if (!devices || devices.length === 0) {
+        throw { name: "NotFoundError", message: "No cameras found" };
+      }
+
+      if (!html5QrCodeRef.current) {
+        html5QrCodeRef.current = new Html5Qrcode("qr-reader");
+      }
+
+      await html5QrCodeRef.current.start(
+        { facingMode: "environment" },
+        {
+          fps: 15,
+          qrbox: { width: 250, height: 250 },
+          aspectRatio: 1.0
+        },
+        (decodedText) => {
+          console.log("QR Code scanned successfully:", decodedText);
+          onScanSuccess(decodedText);
+          stopCamera();
+        },
+        (errorMessage) => {
+          // Only log real errors, not frequent scan failures
+        }
+      );
+      
+      console.log("Camera started successfully");
+      setIsCameraReady(true);
+      setIsCameraStarted(true);
+      setErrorStatus(null);
+    } catch (err: any) {
+      console.error("Critical error starting camera:", err);
+      // Ensure we have a string to check
+      const errMsg = String(err).toLowerCase() + " " + (err?.message || "").toLowerCase() + " " + (err?.name || "").toLowerCase();
+      
+      if (errMsg.includes("notallowederror") || errMsg.includes("permission denied")) {
+        setErrorStatus("Izin kamera ditolak. Jika Anda menggunakan AI Studio, browser biasanya memblokir akses kamera di dalam kotak preview.");
+      } else if (errMsg.includes("notfounderror") || errMsg.includes("devicesnotfounderror")) {
+        setErrorStatus("Kamera tidak ditemukan. Pastikan perangkat Anda memiliki kamera dan browser memiliki izin untuk mengaksesnya.");
+      } else if (errMsg.includes("notreadableerror") || errMsg.includes("trackstarterror")) {
+        setErrorStatus("Kamera sedang digunakan oleh aplikasi lain. Silakan tutup aplikasi lain yang sedang membuka kamera.");
+      } else if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        setErrorStatus("Kamera hanya dapat diakses melalui koneksi aman (HTTPS).");
+      } else {
+        setErrorStatus("Terjadi kesalahan saat memulai kamera: " + (err?.message || err?.name || String(err)));
+      }
+      setIsCameraStarted(false);
+    }
+  };
+
+  const stopCamera = async () => {
+    if (html5QrCodeRef.current) {
+      try {
+        if (html5QrCodeRef.current.isScanning) {
+          await html5QrCodeRef.current.stop();
+        }
+        await html5QrCodeRef.current.clear();
+      } catch (err) {
+        console.error("Failed to clean up scanner", err);
+      }
+    }
+  };
+
+  const retryCamera = async () => {
+    setErrorStatus(null);
+    setIsCameraReady(false);
+    
+    try {
+      // Direct prompt request
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(track => track.stop());
+      
+      // If we get here, permission is granted, now re-initialize the component logic
+      window.location.reload(); 
+    } catch (err: any) {
+      console.error("Manual permission request failed:", err);
+      // Fallback: reload might be the simplest way to clean up the library state
+      window.location.reload();
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -130,7 +158,25 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onScanSuccess, onScanError
       <div className="w-full max-w-sm aspect-square bg-stone-900 rounded-[40px] overflow-hidden relative border-2 border-white/10 shadow-2xl">
         <div id="qr-reader" className="w-full h-full" />
         
-        {!isCameraReady && !errorStatus && (
+        {!isCameraStarted && !errorStatus && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-stone-900 p-8 text-center space-y-6">
+            <div className="w-20 h-20 bg-orange-500/10 text-orange-500 rounded-full flex items-center justify-center">
+              <Camera size={40} />
+            </div>
+            <div className="space-y-2">
+              <h4 className="text-white font-bold">Siap Memindai?</h4>
+              <p className="text-stone-400 text-xs">Klik tombol di bawah untuk mengaktifkan kamera.</p>
+            </div>
+            <button 
+              onClick={startCamera}
+              className="px-8 py-3 bg-orange-500 text-white font-bold rounded-2xl active:scale-95 transition-all shadow-lg shadow-orange-500/30"
+            >
+              Aktifkan Kamera
+            </button>
+          </div>
+        )}
+
+        {isCameraStarted && !isCameraReady && !errorStatus && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-stone-900">
             <Loader2 className="text-orange-500 animate-spin mb-4" size={40} />
             <p className="text-white/50 text-xs font-bold uppercase tracking-widest">Menyiapkan Kamera...</p>
@@ -152,16 +198,24 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onScanSuccess, onScanError
             <h4 className="text-white font-black text-xl mb-3">Akses Kamera Terkendala</h4>
             <p className="text-stone-400 text-sm leading-relaxed mb-8 max-w-xs px-2">
               {errorStatus}
-              <br /><br />
-              <span className="text-xs text-orange-500 font-bold block mb-1">PENTING:</span>
-              <span className="text-xs text-stone-500 italic block">Ini adalah aplikasi web. Cek izin di Chrome/Safari, bukan di Pengaturan HP untuk aplikasi terpisah.</span>
             </p>
             
             <div className="flex flex-col gap-3 w-full max-w-[280px]">
+              <div className="bg-orange-500/10 p-4 rounded-3xl border border-orange-500/20 mb-2">
+                <p className="text-orange-500 text-[11px] font-bold uppercase tracking-widest mb-2 flex items-center justify-center gap-2">
+                  <span className="w-1.5 h-1.5 bg-orange-500 rounded-full animate-ping" />
+                  Solusi Terbaik
+                </p>
+                <p className="text-white text-xs font-medium leading-relaxed">
+                  Klik tombol <span className="text-orange-500 font-bold">Buka di Tab Baru</span> di bawah agar browser bisa meminta izin kamera Anda dengan benar.
+                </p>
+              </div>
+
               <button 
                 onClick={() => window.open(window.location.href, '_blank')}
                 className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl active:scale-95 transition-all text-sm flex items-center justify-center gap-2 shadow-lg shadow-orange-500/40 ring-4 ring-orange-500/20"
               >
+                <Camera size={18} />
                 <span>Buka di Tab Baru</span>
               </button>
               
@@ -174,10 +228,10 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onScanSuccess, onScanError
               </button>
               
               <button 
-                onClick={() => window.location.reload()}
-                className="w-full bg-transparent text-stone-500 font-bold py-2 rounded-2xl active:scale-95 transition-all text-xs uppercase tracking-widest"
+                onClick={retryCamera}
+                className="w-full bg-transparent text-stone-500 font-bold py-2 rounded-2xl active:scale-95 transition-all text-[10px] uppercase tracking-[0.2em]"
               >
-                Segarkan Halaman
+                Coba Lagi
               </button>
             </div>
           </div>
