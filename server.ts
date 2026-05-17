@@ -49,12 +49,12 @@ const tools = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        headcount: { type: Type.NUMBER },
+        headcount: { type: Type.NUMBER, description: "Jumlah orang (Wajib jika Makan di Tempat)" },
         orderType: { type: Type.STRING },
         paymentMethod: { type: Type.STRING },
         overallNote: { type: Type.STRING },
       },
-      required: ["headcount", "orderType", "paymentMethod"],
+      required: ["orderType", "paymentMethod"],
     },
   },
   {
@@ -128,8 +128,8 @@ ISI KERANJANG SAAT INI (Berdasarkan Sistem):
 ${cart || 'Kosong'}
 
 ALUR PESANAN MAKANAN:
-1. TANYA HEADCOUNT: Berapa orang?
-2. TANYA TIPE: Makan di Tempat atau Bungkus?
+1. TANYA TIPE: Makan di Tempat atau Bungkus?
+2. TANYA HEADCOUNT: HANYA JIKA 'Makan di Tempat', tanya "Untuk berapa orang, Kak?". Jika 'Bungkus', lewati tahap ini.
 3. PILIH MENU: Berikan daftar menu. 
    - Panggil 'add_item_to_cart' HANYA JIKA pelanggan menyebutkan menu secara spesifik. 
    - JIKA pelanggan memberikan daftar banyak menu sekaligus, panggil 'add_item_to_cart' BERULANG KALI untuk setiap item tersebut dalam satu respon.
@@ -138,7 +138,7 @@ ALUR PESANAN MAKANAN:
    - JIKA pelanggan menjawab "Cukup", "Sudah", atau "Selesai pilih menu", SEGERA LANJUT KE PEMBAYARAN. JANGAN mengulang daftar menu yang sama terus menerus.
 5. PEMBAYARAN: Tanya metode bayar (Tunai/Transfer).
 6. CATATAN: Tanya pesan koki. 
-7. SELESAI: Panggil 'finalize_order' dengan parameter yang lengkap (termasuk headcount, orderType, paymentMethod yang sudah ditanyakan sebelumnya).
+7. SELESAI: Panggil 'finalize_order' dengan parameter yang lengkap (termasuk headcount jika Makan di Tempat, orderType, paymentMethod yang sudah ditanyakan sebelumnya).
 
 ALUR RESERVASI MEJA:
 1. TANYA DETAIL: Mintalah Nama, Tanggal, Jam, dan Jumlah Orang.

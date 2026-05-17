@@ -55,9 +55,7 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onScanSuccess, onScanError
           onScanSuccess(decodedText);
           stopCamera();
         },
-        (errorMessage) => {
-          // Only log real errors, not frequent scan failures
-        }
+        () => {} // Ignore scan errors
       );
       
       console.log("Camera started successfully");
@@ -65,20 +63,40 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onScanSuccess, onScanError
       setIsCameraStarted(true);
       setErrorStatus(null);
     } catch (err: any) {
+      console.warn("Retrying with fallback facing mode...");
+      try {
+        // Fallback to simpler start
+        if (html5QrCodeRef.current) {
+          await html5QrCodeRef.current.start(
+            { facingMode: "user" },
+            { fps: 10, qrbox: 250 },
+            (decodedText) => {
+              onScanSuccess(decodedText);
+              stopCamera();
+            },
+            () => {}
+          );
+          setIsCameraReady(true);
+          setIsCameraStarted(true);
+          setErrorStatus(null);
+          return;
+        }
+      } catch (err2) {
+        console.error("All camera start attempts failed", err2);
+      }
+
       console.error("Critical error starting camera:", err);
       // Ensure we have a string to check
       const errMsg = String(err).toLowerCase() + " " + (err?.message || "").toLowerCase() + " " + (err?.name || "").toLowerCase();
       
-      if (errMsg.includes("notallowederror") || errMsg.includes("permission denied")) {
-        setErrorStatus("Izin kamera ditolak. Jika Anda menggunakan AI Studio, browser biasanya memblokir akses kamera di dalam kotak preview.");
+      if (errMsg.includes("notallowederror") || errMsg.includes("permission denied") || errMsg.includes("permissiondenied")) {
+        setErrorStatus("Izin kamera ditolak. Silakan berikan izin di pengaturan browser Anda. Jika Anda di AI Studio Preview, gunakan tombol 'Buka di Tab Baru'.");
       } else if (errMsg.includes("notfounderror") || errMsg.includes("devicesnotfounderror")) {
-        setErrorStatus("Kamera tidak ditemukan. Pastikan perangkat Anda memiliki kamera dan browser memiliki izin untuk mengaksesnya.");
+        setErrorStatus("Kamera tidak ditemukan. Pastikan perangkat Anda memiliki kamera.");
       } else if (errMsg.includes("notreadableerror") || errMsg.includes("trackstarterror")) {
-        setErrorStatus("Kamera sedang digunakan oleh aplikasi lain. Silakan tutup aplikasi lain yang sedang membuka kamera.");
-      } else if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-        setErrorStatus("Kamera hanya dapat diakses melalui koneksi aman (HTTPS).");
+        setErrorStatus("Kamera sedang digunakan aplikasi lain atau bermasalah.");
       } else {
-        setErrorStatus("Terjadi kesalahan saat memulai kamera: " + (err?.message || err?.name || String(err)));
+        setErrorStatus("Terjadi kesalahan (" + (err?.name || "Error") + "). Silakan coba unggah foto QR atau buka di tab baru.");
       }
       setIsCameraStarted(false);
     }
@@ -90,9 +108,8 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onScanSuccess, onScanError
         if (html5QrCodeRef.current.isScanning) {
           await html5QrCodeRef.current.stop();
         }
-        await html5QrCodeRef.current.clear();
       } catch (err) {
-        console.error("Failed to clean up scanner", err);
+        console.error("Failed to stop scanner", err);
       }
     }
   };
@@ -100,18 +117,19 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onScanSuccess, onScanError
   const retryCamera = async () => {
     setErrorStatus(null);
     setIsCameraReady(false);
+    setIsCameraStarted(true);
     
     try {
-      // Direct prompt request
+      // Direct permission request attempt
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       stream.getTracks().forEach(track => track.stop());
       
-      // If we get here, permission is granted, now re-initialize the component logic
-      window.location.reload(); 
+      // If granted, try starting the library normally
+      startCamera();
     } catch (err: any) {
       console.error("Manual permission request failed:", err);
-      // Fallback: reload might be the simplest way to clean up the library state
-      window.location.reload();
+      setErrorStatus("Izin kamera tetap ditolak. Silakan gunakan fitur unggah foto atau buka aplikasi di tab baru.");
+      setIsCameraStarted(false);
     }
   };
 

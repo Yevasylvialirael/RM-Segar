@@ -204,6 +204,110 @@ const MainLogo = ({ size = 64, className = "" }: { size?: number, className?: st
   );
 };
 
+// Onboarding Configuration
+const ONBOARDING_STEPS: Record<string, any[]> = {
+  home: [
+    {
+      title: "Selamat Datang!",
+      description: "Nikmati kemudahan memesan Chinese Food khas Kalimantan Barat langsung dari genggamanmu.",
+      position: "center",
+      button: "Mulai Tur"
+    },
+    {
+      title: "Koki AI RM Segar",
+      description: "Bingung mau makan apa? Ngobrol dengan AI kami untuk mendapatkan rekomendasi menu terbaik.",
+      position: "target",
+      elementId: "tour-ai-chat",
+      rx: 32,
+      button: "Lanjut"
+    },
+    {
+      title: "Cari Menu",
+      description: "Gunakan kotak pencarian ini untuk menemukan menu favoritmu dengan cepat.",
+      position: "target",
+      elementId: "tour-search-bar",
+      rx: 20,
+      button: "Lanjut"
+    },
+    {
+      title: "Pilih Kategori",
+      description: "Geser dan pilih kategori untuk melihat menu yang lebih spesifik.",
+      position: "target",
+      elementId: "tour-categories",
+      rx: 0,
+      button: "Selesai"
+    }
+  ],
+  search: [
+    {
+      title: "Pencarian Menu",
+      description: "Ketik nama menu yang Anda cari di sini untuk menemukannya secara instan.",
+      position: "target",
+      elementId: "tour-search-bar",
+      rx: 20,
+      button: "Lanjut"
+    },
+    {
+      title: "Riwayat Pencarian",
+      description: "Pencarian terakhir Anda akan muncul di sini agar mudah diakses kembali.",
+      position: "target",
+      elementId: "tour-search-history",
+      rx: 24,
+      button: "Selesai"
+    }
+  ],
+  heart: [
+    {
+      title: "Menu Favorit",
+      description: "Semua menu yang Anda tandai sebagai favorit akan muncul di halaman ini.",
+      position: "center",
+      button: "Selesai"
+    }
+  ],
+  profile: [
+    {
+      title: "Profil Anda",
+      description: "Kelola akun Anda dan lihat riwayat pesanan yang pernah Anda buat.",
+      position: "target",
+      elementId: "tour-profile-info",
+      rx: 32,
+      button: "Lanjut"
+    },
+    {
+      title: "Riwayat Pesanan",
+      description: "Lihat daftar pesanan yang pernah Anda buat sebelumnya di sini.",
+      position: "target",
+      elementId: "tour-order-history",
+      rx: 20,
+      button: "Lanjut"
+    },
+    {
+      title: "Tentang RM Segar",
+      description: "Klik di sini untuk mengetahui lebih lanjut tentang sejarah dan visi kami.",
+      position: "target",
+      elementId: "tour-about-button",
+      rx: 20,
+      button: "Lanjut"
+    },
+    {
+      title: "Panduan Penggunaan",
+      description: "Jika Anda ingin melihat panduan ini lagi di masa mendatang, Anda bisa menekan tombol ini.",
+      position: "target",
+      elementId: "tour-guide-button",
+      rx: 20,
+      button: "Selesai"
+    }
+  ],
+  about: [
+    {
+      title: "Tentang Kami",
+      description: "Pelajari lebih dalam mengenai RM Segar, cita rasa autentik yang kami tawarkan.",
+      position: "center",
+      button: "Selesai"
+    }
+  ]
+};
+
 export default function App() {
   const [isGameOpen, setIsGameOpen] = useState(false);
   const [gameScore, setGameScore] = useState(0);
@@ -383,109 +487,6 @@ export default function App() {
   const [tourStep, setTourStep] = useState(0);
   const [completedTours, setCompletedTours] = useState<Record<string, boolean>>({});
   const [spotlightRect, setSpotlightRect] = useState<{ x: number, y: number, width: number, height: number, rx: number } | null>(null);
-  
-  const onboardingSteps: Record<string, any[]> = useMemo(() => ({
-    home: [
-      {
-        title: "Selamat Datang!",
-        description: "Nikmati kemudahan memesan Chinese Food khas Kalimantan Barat langsung dari genggamanmu.",
-        position: "center",
-        button: "Mulai Tur"
-      },
-      {
-        title: "Koki AI RM Segar",
-        description: "Bingung mau makan apa? Ngobrol dengan AI kami untuk mendapatkan rekomendasi menu terbaik.",
-        position: "target",
-        elementId: "tour-ai-chat",
-        rx: 32,
-        button: "Lanjut"
-      },
-      {
-        title: "Cari Menu",
-        description: "Gunakan kotak pencarian ini untuk menemukan menu favoritmu dengan cepat.",
-        position: "target",
-        elementId: "tour-search-bar",
-        rx: 20,
-        button: "Lanjut"
-      },
-      {
-        title: "Pilih Kategori",
-        description: "Geser dan pilih kategori untuk melihat menu yang lebih spesifik.",
-        position: "target",
-        elementId: "tour-categories",
-        rx: 0,
-        button: "Selesai"
-      }
-    ],
-    search: [
-      {
-        title: "Pencarian Menu",
-        description: "Ketik nama menu yang Anda cari di sini untuk menemukannya secara instan.",
-        position: "target",
-        elementId: "tour-search-bar",
-        rx: 20,
-        button: "Lanjut"
-      },
-      {
-        title: "Riwayat Pencarian",
-        description: "Pencarian terakhir Anda akan muncul di sini agar mudah diakses kembali.",
-        position: "target",
-        elementId: "tour-search-history",
-        rx: 24,
-        button: "Selesai"
-      }
-    ],
-    heart: [
-      {
-        title: "Menu Favorit",
-        description: "Semua menu yang Anda tandai sebagai favorit akan muncul di halaman ini.",
-        position: "center",
-        button: "Selesai"
-      }
-    ],
-    profile: [
-      {
-        title: "Profil Anda",
-        description: "Kelola akun Anda dan lihat riwayat pesanan yang pernah Anda buat.",
-        position: "target",
-        elementId: "tour-profile-info",
-        rx: 32,
-        button: "Lanjut"
-      },
-      {
-        title: "Riwayat Pesanan",
-        description: "Lihat daftar pesanan yang pernah Anda buat sebelumnya di sini.",
-        position: "target",
-        elementId: "tour-order-history",
-        rx: 20,
-        button: "Lanjut"
-      },
-      {
-        title: "Tentang RM Segar",
-        description: "Klik di sini untuk mengetahui lebih lanjut tentang sejarah dan visi kami.",
-        position: "target",
-        elementId: "tour-about-button",
-        rx: 20,
-        button: "Lanjut"
-      },
-      {
-        title: "Panduan Penggunaan",
-        description: "Jika Anda ingin melihat panduan ini lagi di masa mendatang, Anda bisa menekan tombol ini.",
-        position: "target",
-        elementId: "tour-guide-button",
-        rx: 20,
-        button: "Selesai"
-      }
-    ],
-    about: [
-      {
-        title: "Tentang Kami",
-        description: "Pelajari lebih dalam mengenai RM Segar, cita rasa autentik yang kami tawarkan.",
-        position: "center",
-        button: "Selesai"
-      }
-    ]
-  }), []);
   
   // AI Chat State
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -714,7 +715,7 @@ export default function App() {
               return line;
             }).join('\n');
             
-            const message = `*RM SEGAR - PESANAN BARU #${orderId}*\n\n${orderDetails}\n\n*Detail:*\n- Orang: ${args.headcount}\n- Tipe: ${args.orderType}\n- Bayar: ${args.paymentMethod}\n- Pesan: ${args.overallNote || '-'}`;
+            const message = `*RM SEGAR - PESANAN BARU #${orderId}*\n\n${orderDetails}\n\n*Detail:*\n${args.headcount ? `- Orang: ${args.headcount}\n` : ''}- Tipe: ${args.orderType}\n- Bayar: ${args.paymentMethod}\n- Pesan: ${args.overallNote || '-'}`;
             pendingWaUrl = `https://wa.me/${adminPhone}?text=${encodeURIComponent(message)}`;
             const orderData: Order = {
               id: orderId,
@@ -868,7 +869,7 @@ export default function App() {
     if (chatMessages.length === 0) {
       const greeting = user 
         ? "Halo! Saya Master Panda, Koki AI RM Segar. Ada yang bisa saya bantu hari ini? 🐼 [OPSI: Pesan Makanan|Reservasi Meja]"
-        : "Halo! Saya Master Panda, Koki AI RM Segar. Silakan mampir atau login untuk akses fitur pesan antar & reservasi ya! Ada yang ingin ditanyakan seputar menu kami hari ini? 🐼🎋";
+        : "Halo! Saya Master Panda, Koki AI RM Segar. Silakan mampir atau login untuk akses fitur reservasi ya! Ada yang ingin ditanyakan seputar menu kami hari ini? 🐼🎋";
       
       setChatMessages([{ 
         role: 'model', 
@@ -903,7 +904,7 @@ export default function App() {
     if (isLoading) return;
 
     const triggerTour = (context: string) => {
-      if (onboardingSteps[context] && !completedTours[context]) {
+      if (ONBOARDING_STEPS[context] && !completedTours[context]) {
         const timer = setTimeout(() => {
           setActiveTour(context as any);
           setTourStep(0);
@@ -927,7 +928,7 @@ export default function App() {
     }
 
     const updatePosition = () => {
-      const steps = onboardingSteps[activeTour];
+      const steps = ONBOARDING_STEPS[activeTour];
       if (!steps) return;
       
       const step = steps[tourStep];
@@ -974,7 +975,7 @@ export default function App() {
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [activeTour, tourStep, activeTab, onboardingSteps]);
+  }, [activeTour, tourStep, activeTab]);
 
   // Pull to refresh logic using native touch events to avoid blocking scroll
   useEffect(() => {
@@ -1104,7 +1105,7 @@ export default function App() {
   const clearChat = () => {
     const greeting = user 
       ? "Halo! Saya Master Panda, Koki AI RM Segar. Ada yang bisa saya bantu hari ini? 🐼 [OPSI: Pesan Makanan|Reservasi Meja]"
-      : "Halo! Saya Master Panda, Koki AI RM Segar. Silakan mampir atau login untuk akses fitur pesan antar & reservasi ya! Ada yang ingin ditanyakan seputar menu kami hari ini? 🐼🎋";
+      : "Halo! Saya Master Panda, Koki AI RM Segar. Silakan mampir atau login untuk akses fitur reservasi ya! Ada yang ingin ditanyakan seputar menu kami hari ini? 🐼🎋";
 
     setChatMessages([{ 
       role: 'model', 
@@ -1264,7 +1265,7 @@ export default function App() {
         cartTimeoutRef.current = setTimeout(() => {
           setIsCartOpen(true);
           cartTimeoutRef.current = null;
-        }, 400);
+        }, 650);
       }
     } else {
       if (isCartOpen) {
@@ -1287,7 +1288,7 @@ export default function App() {
 
   const nextTourStep = () => {
     if (!activeTour) return;
-    const steps = onboardingSteps[activeTour];
+    const steps = ONBOARDING_STEPS[activeTour];
     if (tourStep + 1 < steps.length) {
       setTourStep(tourStep + 1);
     } else {
@@ -1297,7 +1298,7 @@ export default function App() {
 
   const renderOnboarding = () => {
     if (!activeTour || !spotlightRect) return null;
-    const steps = onboardingSteps[activeTour];
+    const steps = ONBOARDING_STEPS[activeTour];
     const step = steps[tourStep];
     
     const isTop = spotlightRect.y > window.innerHeight / 2;
@@ -1443,7 +1444,6 @@ export default function App() {
  
  Saya memesan berikut:
  - Waktu: ${new Date().toLocaleString('id-ID')}
- - Untuk: ${orderType === 'Makan di Tempat' ? `${scheduleHeadcount} orang` : 'Bungkus'}
  
  *Daftar Menu:*
  ${orderDetails}
@@ -1506,8 +1506,7 @@ export default function App() {
  
  Saya ingin memesan/reservasi untuk:
  - Waktu: ${scheduleInfo}
- - Untuk: ${scheduleHeadcount} orang
- 
+${orderType === 'Makan di Tempat' ? ` - Untuk: ${scheduleHeadcount} orang\n` : ''}
  *Pesanan:*
  ${orderDetails}
  
@@ -2259,26 +2258,30 @@ export default function App() {
               </div>
 
               <div className="space-y-4">
-                <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Detail Reservasi</p>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-stone-50 p-4 rounded-[28px]">
-                    <p className="text-[10px] font-black text-stone-400 uppercase mb-2">Jumlah Orang</p>
-                    <div className="flex items-center justify-between">
-                       <button 
-                         onClick={() => setScheduleHeadcount(Math.max(1, scheduleHeadcount - 1))}
-                         className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm text-stone-900"
-                       >
-                         <Minus size={14} />
-                       </button>
-                       <span className="text-xl font-black text-stone-900">{scheduleHeadcount}</span>
-                       <button 
-                         onClick={() => setScheduleHeadcount(scheduleHeadcount + 1)}
-                         className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm text-stone-900"
-                       >
-                         <Plus size={14} />
-                       </button>
+                <p className="text-xs font-black text-stone-400 uppercase tracking-widest px-2">Detail Pesanan</p>
+                <div className={`${orderType === 'Makan di Tempat' ? 'grid grid-cols-2' : 'block'} gap-4`}>
+                  {orderType === 'Makan di Tempat' && (
+                    <div className="bg-stone-50 p-4 rounded-[28px] animate-in fade-in zoom-in duration-300">
+                      <p className="text-[10px] font-black text-stone-400 uppercase mb-2">Jumlah Orang</p>
+                      <div className="flex items-center justify-between">
+                         <button 
+                           type="button"
+                           onClick={() => setScheduleHeadcount(Math.max(1, scheduleHeadcount - 1))}
+                           className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm text-stone-900"
+                         >
+                           <Minus size={14} />
+                         </button>
+                         <span className="text-xl font-black text-stone-900">{scheduleHeadcount}</span>
+                         <button 
+                           type="button"
+                           onClick={() => setScheduleHeadcount(scheduleHeadcount + 1)}
+                           className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shadow-sm text-stone-900"
+                         >
+                           <Plus size={14} />
+                         </button>
+                      </div>
                     </div>
-                  </div>
+                  )}
                   <div className={`bg-stone-50 p-4 rounded-[28px] border-2 transition-all ${
                     orderType === 'Makan di Tempat' ? 'border-stone-900/10' : 'border-orange-500/20'
                   }`}>
@@ -3160,7 +3163,7 @@ export default function App() {
                           cartTimeoutRef.current = setTimeout(() => {
                             setIsCartOpen(true);
                             cartTimeoutRef.current = null;
-                          }, 400);
+                          }, 650);
                         } else if (!isCartOpen) {
                           // Handle case where it was closed but tab still active (should not happen normally)
                           setIsCartOpen(true);

@@ -24,12 +24,12 @@ export async function sendMessageToAI(message: string, history: any[]) {
       parameters: {
         type: "OBJECT",
         properties: {
-          headcount: { type: "NUMBER" },
+          headcount: { type: "NUMBER", description: "Jumlah orang (Wajib jika Makan di Tempat)" },
           orderType: { type: "STRING", enum: ['Makan di Tempat', 'Bungkus'] },
           paymentMethod: { type: "STRING", enum: ['Transfer', 'Tunai'] },
           overallNote: { type: "STRING" },
         },
-        required: ["headcount", "orderType", "paymentMethod"],
+        required: ["orderType", "paymentMethod"],
       },
     },
     {
